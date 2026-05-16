@@ -12,6 +12,7 @@
   "add_day_in_week": false,
   "train_rate": 0.6,
   "eval_rate": 0.2,
+  "pad_with_last_sample": false,
 
   "max_epoch": 100,
   "learner": "adam",
