@@ -8,6 +8,7 @@ from ray.tune.search import ConcurrencyLimiter
 import json
 import torch
 import random
+import time
 from libcity.config import ConfigParser
 from libcity.data import get_dataset
 from libcity.utils import get_executor, get_model, get_logger, ensure_dir, set_random_seed
@@ -31,8 +32,8 @@ def run_model(task=None, model_name=None, dataset_name=None, config_file=None,
                           config_file, saved_model, train, other_args)
     exp_id = config.get('exp_id', None)
     if exp_id is None:
-        # Make a new experiment ID
-        exp_id = int(random.SystemRandom().random() * 100000)
+        # Make a new experiment ID based on timestamp
+        exp_id = int(time.time() * 1000)  # milliseconds
         config['exp_id'] = exp_id
     # logger
     logger = get_logger(config)
@@ -139,7 +140,7 @@ def hyper_parameter(task=None, model_name=None, dataset_name=None, config_file=N
     # exp_id
     exp_id = experiment_config.get('exp_id', None)
     if exp_id is None:
-        exp_id = int(random.SystemRandom().random() * 100000)
+        exp_id = int(time.time() * 1000)
         experiment_config['exp_id'] = exp_id
     # logger
     logger = get_logger(experiment_config)
@@ -175,7 +176,7 @@ def hyper_parameter(task=None, model_name=None, dataset_name=None, config_file=N
         experiment_config['hyper_tune'] = True
         logger = get_logger(experiment_config)
         # exp_id
-        exp_id = int(random.SystemRandom().random() * 100000)
+        exp_id = int(time.time() * 1000)
         experiment_config['exp_id'] = exp_id
         logger.info('Begin pipeline, task={}, model_name={}, dataset_name={}, exp_id={}'.
                     format(str(task), str(model_name), str(dataset_name), str(exp_id)))
