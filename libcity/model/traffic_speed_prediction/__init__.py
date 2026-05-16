@@ -13,7 +13,7 @@ from libcity.model.traffic_speed_prediction.GMAN import GMAN
 from libcity.model.traffic_speed_prediction.STAGGCN import STAGGCN
 from libcity.model.traffic_speed_prediction.GTS import GTS
 from libcity.model.traffic_speed_prediction.HGCN import HGCN
-from libcity.model.traffic_speed_prediction.STMGAT import STMGAT
+# from libcity.model.traffic_speed_prediction.STMGAT import STMGAT
 from libcity.model.traffic_speed_prediction.DKFN import DKFN
 from libcity.model.traffic_speed_prediction.STTN import STTN
 from libcity.model.traffic_speed_prediction.D2STGNN import D2STGNN
@@ -42,7 +42,7 @@ __all__ = [
     "GTS",
     "HGCN",
     "STAGGCN",
-    "STMGAT",
+    # "STMGAT",
     "DKFN",
     "STTN",
     "D2STGNN",
