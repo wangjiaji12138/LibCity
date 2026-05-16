@@ -202,13 +202,15 @@ class STAEformer(AbstractTrafficStateModel):
         )
 
     def forward(self, x):
-        # x: (batch_size, in_steps, num_nodes, input_dim+tod+dow=3)
+        # x: (batch_size, in_steps, num_nodes, input_dim+tod+dow)
         batch_size = x.shape[0]
 
+        tod = None
+        dow = None
         if self.add_time_in_day:
-            tod = x[..., 1]
+            tod = x[..., self.input_dim]  # time_in_day after original features
         if self.add_day_in_week:
-            dow = x[..., 2]
+            dow = x[..., self.input_dim + 1]  # day_in_week after time_in_day
         x = x[..., : self.input_dim]
 
         x = self.input_proj(x)  # (batch_size, in_steps, num_nodes, input_embedding_dim)
