@@ -48,6 +48,8 @@ class STID(AbstractTrafficStateModel):
         self.output_window = config.get('output_window')
         self.feature_dim = data_feature.get('feature_dim', 2)
         self.output_dim = self.data_feature.get('output_dim', 1)
+        # STID only uses flow data for time series, so use 1 channel
+        self.model_output_dim = config.get('model_output_dim', 1)
         self.time_intervals = config.get('time_intervals')
         self._scaler = self.data_feature.get('scaler')
 
@@ -80,39 +82,44 @@ class STID(AbstractTrafficStateModel):
 
         # embedding layer
         self.time_series_emb_layer = nn.Conv2d(
-            in_channels=self.output_dim * self.input_window, out_channels=self.time_series_emb_dim, kernel_size=(1, 1),
+            in_channels=self.model_output_dim * self.input_window, out_channels=self.time_series_emb_dim, kernel_size=(1, 1),
             bias=True)
 
         # encoding
         self.hidden_dim = self.time_series_emb_dim + self.spatial_emb_dim * int(self.if_spatial) + \
-                          self.temp_dim_tid * int(self.if_day_in_week) + self.temp_dim_diw * int(self.if_time_in_day)
+                          self.temp_dim_tid * int(self.if_time_in_day) + self.temp_dim_diw * int(self.if_day_in_week)
         self.encoder = nn.Sequential(
             *[MultiLayerPerceptron(self.hidden_dim, self.hidden_dim) for _ in range(self.num_block)])
 
         # regression
         self.regression_layer = nn.Conv2d(
-            in_channels=self.hidden_dim, out_channels=self.output_window, kernel_size=(1, 1), bias=True)
+            in_channels=self.hidden_dim, out_channels=self.model_output_dim * self.output_window, kernel_size=(1, 1), bias=True)
 
     def forward(self, batch):
         # prepare data
         input_data = batch['X']  # [B, L, N, C]
-        time_series = input_data[..., :1]
+        # STID only uses flow data (first channel) for time series embedding
+        time_series = input_data[..., :self.model_output_dim]
 
         if self.if_time_in_day:
             tid_data = input_data[..., 1]
-            time_in_day_emb = self.time_in_day_emb[(tid_data[:, -1, :] * self.time_of_day_size).type(torch.LongTensor)]
+            time_in_day_emb = self.time_in_day_emb[(tid_data[:, -1, :] * self.time_of_day_size).long()]
         else:
             time_in_day_emb = None
         if self.if_day_in_week:
-            diw_data = torch.argmax(input_data[..., 2:], dim=-1)
-            day_in_week_emb = self.day_in_week_emb[(diw_data[:, -1, :]).type(torch.LongTensor)]
+            # input_data[..., 2:9] is one-hot encoded day_in_week with 7 classes
+            # Clamp to ensure valid indices [0, 6]
+            diw_data = torch.argmax(input_data[..., 2:9], dim=-1)
+            day_in_week_emb = self.day_in_week_emb[diw_data[:, -1, :].long()]
         else:
             day_in_week_emb = None
 
-        # time series embedding
-        batch_size, _, num_nodes, _ = time_series.shape
-        time_series = time_series.transpose(1, 2).contiguous()
-        time_series = time_series.view(batch_size, num_nodes, -1).transpose(1, 2).unsqueeze(-1)
+        # time series embedding: [B, L, N, C] -> [B, C*L, N, 1]
+        batch_size, seq_len, num_nodes, num_features = time_series.shape
+        time_series = time_series.permute(0, 2, 1, 3).contiguous()
+        time_series = time_series.view(batch_size, num_nodes, -1)
+        time_series = time_series.transpose(1, 2)
+        time_series = time_series.unsqueeze(-1)
         time_series_emb = self.time_series_emb_layer(time_series)
 
         node_emb = []
@@ -135,9 +142,19 @@ class STID(AbstractTrafficStateModel):
     def calculate_loss(self, batch):
         y_true = batch['y']
         y_predicted = self.predict(batch)
+        # y_predicted shape: [B, output_window, N, model_output_dim]
+        # y_true shape: [B, output_window, N, output_dim]
+        # Expand y_predicted from [B, L, N, 1] to [B, L, N, output_dim] for loss computation
+        if self.model_output_dim == 1 and self.output_dim > 1:
+            y_predicted = y_predicted.expand(-1, -1, -1, self.output_dim)
         y_true = self._scaler.inverse_transform(y_true[..., :self.output_dim])
         y_predicted = self._scaler.inverse_transform(y_predicted[..., :self.output_dim])
         return loss.masked_mae_torch(y_predicted, y_true, 0)
 
     def predict(self, batch):
-        return self.forward(batch)
+        output = self.forward(batch)
+        # Expand output from [B, L, N, model_output_dim] to [B, L, N, output_dim]
+        # for evaluation compatibility. Repeat the flow prediction for all output dims.
+        if self.model_output_dim == 1 and self.output_dim > 1:
+            output = output.repeat(1, 1, 1, self.output_dim)
+        return output

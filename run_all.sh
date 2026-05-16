@@ -3,7 +3,7 @@ set -euo pipefail
 
 DATASETS=(PEMSD8 PEMSD3 PEMSD4  PEMSD7)
 MODELS=(AGCRN ASTGCN D2STGNN DCRNN GWNET MTGNN STGCN STGNCDE STAEformer STID PDFormer)
-MODELS=(STAEformer STID PDFormer)
+MODELS=(STID PDFormer)
 for ds in "${DATASETS[@]}"; do
   for model in "${MODELS[@]}"; do
     
