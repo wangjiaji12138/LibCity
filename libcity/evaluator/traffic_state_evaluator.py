@@ -83,11 +83,13 @@ class TrafficStateEvaluator(AbstractEvaluator):
                         self.intermediate_result[metric + '@' + str(i)].append(
                             loss.masked_mape_torch(y_pred[:, :i], y_true[:, :i]).item())
                     elif metric == 'R2':
+                        r2_result = loss.r2_score_torch(y_pred[:, :i], y_true[:, :i])
                         self.intermediate_result[metric + '@' + str(i)].append(
-                            loss.r2_score_torch(y_pred[:, :i], y_true[:, :i]).item())
+                            r2_result.item() if hasattr(r2_result, 'item') else r2_result)
                     elif metric == 'EVAR':
+                        evar_result = loss.explained_variance_score_torch(y_pred[:, :i], y_true[:, :i])
                         self.intermediate_result[metric + '@' + str(i)].append(
-                            loss.explained_variance_score_torch(y_pred[:, :i], y_true[:, :i]).item())
+                            evar_result.item() if hasattr(evar_result, 'item') else evar_result)
         elif self.mode.lower() == 'single':  # 第i个时间步的loss
             for i in range(1, self.len_timeslots + 1):
                 for metric in self.metrics:
@@ -120,11 +122,13 @@ class TrafficStateEvaluator(AbstractEvaluator):
                         self.intermediate_result[metric + '@' + str(i)].append(
                             loss.masked_mape_torch(y_pred[:, i - 1], y_true[:, i - 1]).item())
                     elif metric == 'R2':
+                        r2_result = loss.r2_score_torch(y_pred[:, i - 1], y_true[:, i - 1])
                         self.intermediate_result[metric + '@' + str(i)].append(
-                            loss.r2_score_torch(y_pred[:, i - 1], y_true[:, i - 1]).item())
+                            r2_result.item() if hasattr(r2_result, 'item') else r2_result)
                     elif metric == 'EVAR':
+                        evar_result = loss.explained_variance_score_torch(y_pred[:, i - 1], y_true[:, i - 1])
                         self.intermediate_result[metric + '@' + str(i)].append(
-                            loss.explained_variance_score_torch(y_pred[:, i - 1], y_true[:, i - 1]).item())
+                            evar_result.item() if hasattr(evar_result, 'item') else evar_result)
         else:
             raise ValueError('Error parameter evaluator_mode={}, please set `single` or `average`.'.format(self.mode))
 
