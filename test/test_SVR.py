@@ -15,13 +15,12 @@ from libcity.utils import preprocess_data
 config = {
     'model': 'SVR',
     'kernel': 'rbf',
-    'dataset': 'METR_LA',
-    'train_rate': 0.7,
-    'eval_rate': 0.1,
+    'dataset': 'PEMSD8',
+    'train_rate': 0.6,
+    'eval_rate': 0.2,
     'input_window': 12,
-    'output_window': 3,
-    'metrics': ['MAE', 'MAPE', 'MSE', 'RMSE', 'masked_MAE',
-                'masked_MAPE', 'masked_MSE', 'masked_RMSE', 'R2', 'EVAR']}
+    'output_windows': 12,
+    'metrics': ['masked_MAE', 'masked_RMSE', 'masked_MAPE',]}
 
 
 def get_data(dataset):

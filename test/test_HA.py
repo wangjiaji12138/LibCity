@@ -13,14 +13,13 @@ config = {
     'model': 'HA',
     'lag': [24 * 7 * 12],
     'weight': [1],
-    'dataset': 'METR_LA',
-    'train_rate': 0.7,
-    'eval_rate': 0.1,
+    'dataset': 'PEMSD8',
+    'train_rate': 0.6,
+    'eval_rate': 0.2,
     'input_window': 12,
-    'output_windows': 3,
+    'output_windows': 12,
     'null_value': 0,
-    'metrics': ['MAE', 'MAPE', 'MSE', 'RMSE', 'masked_MAE',
-                'masked_MAPE', 'masked_MSE', 'masked_RMSE', 'R2', 'EVAR']
+    'metrics': ['masked_MAE', 'masked_RMSE', 'masked_MAPE',]
 }
 
 
