@@ -11,7 +11,7 @@ from libcity.evaluator.utils import evaluate_model
 
 config = {
     'model': 'HA',
-    'lag': [24 * 7 * 12],
+    'lag': [24 * 12],
     'weight': [1],
     'dataset': 'PEMSD8',
     'train_rate': 0.6,

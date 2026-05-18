@@ -72,7 +72,7 @@ def get_data(dataset):
 
 def run_SVR(data):
     ts, num_nodes, f = data.shape
-    output_window = config.get("output_window", 3)
+    output_window = config.get("output_windows", 3)
     kernel = config.get('kernel', 'rbf')
 
     y_pred = []
