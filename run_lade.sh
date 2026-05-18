@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-DATASETS=(PEMSD8 PEMSD3 PEMSD4 PEMSD7)
+DATASETS=(LaDe_SH LaDe_CQ LaDe_HZ LaDe_YT LaDe_JL)
 MODELS=(AGCRN ASTGCN D2STGNN DCRNN GWNET GMAN MTGNN STGCN STGNCDE STAEformer)
 for ds in "${DATASETS[@]}"; do
   for model in "${MODELS[@]}"; do
