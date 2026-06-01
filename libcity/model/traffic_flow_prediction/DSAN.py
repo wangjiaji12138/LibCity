@@ -797,4 +797,4 @@ class DSAN(AbstractTrafficStateModel):
         y_pred = self.predict(batch)
         y_true = self._scaler.inverse_transform(y_true[..., :self.output_dim])
         y_predicted = self._scaler.inverse_transform(y_pred[..., :self.output_dim])
-        return masked_rmse_torch(y_predicted, y_true, 0)
+        return masked_rmse_torch(y_predicted, y_true, np.nan)

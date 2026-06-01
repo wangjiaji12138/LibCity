@@ -417,7 +417,7 @@ class HIEST(AbstractTrafficStateModel):
         # reconstruct the adjacency matrix of the original graph
         ar_hat = torch.sigmoid(hr.float() @ hrt.float())
 
-        preLoss = loss.masked_mae_torch(y_predicted, y_true, 0)
+        preLoss = loss.masked_mae_torch(y_predicted, y_true, np.nan)
         recLoss0 = F.binary_cross_entropy(ao_hat, self.ao, reduction='mean')
         recLoss = F.binary_cross_entropy(ar_hat, self.adj_mxr.float(), reduction='mean')
         ortLoss = self.ortLoss(xg)

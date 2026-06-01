@@ -803,9 +803,9 @@ class D2STGNN(AbstractTrafficStateModel):
                 return loss.masked_mae_torch(y_predicted[:, :self.task_level, :, :],
                                              y_true[:, :self.task_level, :, :], 0)
             else:
-                return loss.masked_mae_torch(y_predicted, y_true, 0)
+                return loss.masked_mae_torch(y_predicted, y_true, np.nan)
         else:
-            return loss.masked_mae_torch(y_predicted, y_true, 0)
+            return loss.masked_mae_torch(y_predicted, y_true, np.nan)
 
     def predict(self, batch):
         return self.forward(batch)

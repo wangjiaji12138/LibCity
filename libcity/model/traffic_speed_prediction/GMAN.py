@@ -1,6 +1,7 @@
 from logging import getLogger
 
 import torch
+import numpy as np
 import torch.nn as nn
 import torch.nn.functional as F
 
@@ -392,7 +393,7 @@ class GMAN(AbstractTrafficStateModel):
         y_predicted = self.predict(batch)  # (batch_size, output_length, num_nodes, output_dim)
         y_true = self._scaler.inverse_transform(y_true[..., :self.output_dim])
         y_predicted = self._scaler.inverse_transform(y_predicted[..., :self.output_dim])
-        return loss.masked_mse_torch(y_predicted, y_true, 0.0)
+        return loss.masked_mse_torch(y_predicted, y_true, np.nan)
 
     def predict(self, batch):
         return self.forward(batch)  # (batch_size, output_length, num_nodes, output_dim)

@@ -444,7 +444,7 @@ class DCRNN(AbstractTrafficStateModel, Seq2SeqAttrs):
         y_predicted = self.predict(batch, batches_seen)
         y_true = self._scaler.inverse_transform(y_true[..., :self.output_dim])
         y_predicted = self._scaler.inverse_transform(y_predicted[..., :self.output_dim])
-        return loss.masked_mae_torch(y_predicted, y_true, 0)
+        return loss.masked_mae_torch(y_predicted, y_true, np.nan)
 
     def predict(self, batch, batches_seen=None):
         return self.forward(batch, batches_seen)

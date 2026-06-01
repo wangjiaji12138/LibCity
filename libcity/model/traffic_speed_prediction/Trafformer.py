@@ -770,5 +770,5 @@ class Trafformer(AbstractTrafficStateModel):
         output = self.predict(batch)
         y_true = self._scaler.inverse_transform(y[..., :self.output_dim])
         y_pred = self._scaler.inverse_transform(output[..., :self.output_dim])
-        c_loss = loss.masked_mae_torch(y_pred, y_true, null_val=0.0)
+        c_loss = loss.masked_mae_torch(y_pred, y_true, null_val=np.nan)
         return c_loss / self.gradient_accumulation_steps

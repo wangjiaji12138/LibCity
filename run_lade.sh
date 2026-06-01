@@ -2,13 +2,15 @@
 set -euo pipefail
 
 DATASETS=(LaDe_SH LaDe_CQ LaDe_HZ LaDe_YT LaDe_JL)
-MODELS=(AGCRN ASTGCN D2STGNN DCRNN GWNET GMAN MTGNN STGCN STGNCDE STAEformer)
+MODELS=(DSTGN AGCRN ASTGCN D2STGNN DCRNN GMAN GWNET MTGNN STGCN STGNCDE STAEformer)
 for ds in "${DATASETS[@]}"; do
   for model in "${MODELS[@]}"; do
-    cmd=(python run_model.py --task traffic_state_pred --dataset "$ds" --model "$model")
+    cmd=(python run_model.py --task traffic_state_pred --dataset "$ds" --model "$model" \
+         --input_window 24 --output_window 24)
     echo ">>> running: ${cmd[*]}"
     "${cmd[@]}" 2>&1
   done
 done
 
 echo "全部任务已结束"
+``

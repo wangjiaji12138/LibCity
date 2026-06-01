@@ -1,5 +1,6 @@
 from __future__ import division
 import torch
+import numpy as np
 import torch.nn as nn
 from torch.nn import init
 import numbers
@@ -531,9 +532,9 @@ class MTGNN(AbstractTrafficStateModel):
                 return loss.masked_mae_torch(y_predicted[:, :self.task_level, :, :],
                                              y_true[:, :self.task_level, :, :], 0)
             else:
-                return loss.masked_mae_torch(y_predicted, y_true, 0)
+                return loss.masked_mae_torch(y_predicted, y_true, np.nan)
         else:
-            return loss.masked_mae_torch(y_predicted, y_true, 0)
+            return loss.masked_mae_torch(y_predicted, y_true, np.nan)
 
     def predict(self, batch, idx=None):
         return self.forward(batch, idx)

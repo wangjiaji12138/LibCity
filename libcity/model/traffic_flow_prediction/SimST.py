@@ -1,6 +1,7 @@
 from logging import getLogger
 
 import torch
+import numpy as np
 import torch.nn as nn
 import torch.nn.functional as F
 
@@ -194,4 +195,4 @@ class SimST(AbstractTrafficStateModel):
         y_predicted = self.predict(batch)
         y_true = self._scaler.inverse_transform(y_true[..., :self.output_dim])
         y_predicted = self._scaler.inverse_transform(y_predicted[..., :self.output_dim])
-        return loss.masked_mae_torch(y_predicted, y_true, null_val=0.0)
+        return loss.masked_mae_torch(y_predicted, y_true, null_val=np.nan)

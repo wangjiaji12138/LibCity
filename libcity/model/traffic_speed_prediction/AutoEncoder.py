@@ -1,4 +1,5 @@
 import torch
+import numpy as np
 import torch.nn as nn
 from logging import getLogger
 from libcity.model import loss
@@ -44,7 +45,7 @@ class AutoEncoder(AbstractTrafficStateModel):
         y_predicted = self.predict(batch)
         y_true = self._scaler.inverse_transform(y_true[..., :self.output_dim])
         y_predicted = self._scaler.inverse_transform(y_predicted[..., :self.output_dim])
-        return loss.masked_mae_torch(y_predicted, y_true, 0)
+        return loss.masked_mae_torch(y_predicted, y_true, np.nan)
 
     def predict(self, batch):
         return self.forward(batch)

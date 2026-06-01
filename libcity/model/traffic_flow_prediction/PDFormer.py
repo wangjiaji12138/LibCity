@@ -461,15 +461,15 @@ class PDFormer(AbstractTrafficStateModel):
         elif set_loss.lower() == 'quantile':
             lf = partial(loss.quantile_loss, delta=self.quan_delta)
         elif set_loss.lower() == 'masked_mae':
-            lf = partial(loss.masked_mae_torch, null_val=0)
+            lf = partial(loss.masked_mae_torch, null_val=np.nan)
         elif set_loss.lower() == 'masked_mse':
-            lf = partial(loss.masked_mse_torch, null_val=0)
+            lf = partial(loss.masked_mse_torch, null_val=np.nan)
         elif set_loss.lower() == 'masked_rmse':
-            lf = partial(loss.masked_rmse_torch, null_val=0)
+            lf = partial(loss.masked_rmse_torch, null_val=np.nan)
         elif set_loss.lower() == 'masked_mape':
-            lf = partial(loss.masked_mape_torch, null_val=0)
+            lf = partial(loss.masked_mape_torch, null_val=np.nan)
         elif set_loss.lower() == 'masked_huber':
-            lf = partial(loss.masked_huber_loss, delta=self.huber_delta, null_val=0)
+            lf = partial(loss.masked_huber_loss, delta=self.huber_delta, null_val=np.nan)
         elif set_loss.lower() == 'r2':
             lf = loss.r2_score_torch
         elif set_loss.lower() == 'evar':

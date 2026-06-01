@@ -107,7 +107,7 @@ class FreTS(AbstractTrafficStateModel):
         y_predicted = self.predict(batch)
         y_true = self._scaler.inverse_transform(y_true[..., :self.output_dim])
         y_predicted = self._scaler.inverse_transform(y_predicted[..., :self.output_dim])
-        return loss.masked_mse_torch(y_predicted, y_true, 0.0)
+        return loss.masked_mse_torch(y_predicted, y_true, np.nan)
 
     def forward(self, x):
         # x: [Batch, Input length, Channel]

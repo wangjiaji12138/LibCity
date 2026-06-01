@@ -249,7 +249,7 @@ class MegaCRN(AbstractTrafficStateModel):
         output, h_att, query, pos, neg = self.loss_predict(batch)
         y_true = self._scaler.inverse_transform(y[..., :self.output_dim])
         y_pred = self._scaler.inverse_transform(output[..., :self.output_dim])
-        loss1 = loss.masked_mae_torch(y_pred, y_true, null_val=0.0)
+        loss1 = loss.masked_mae_torch(y_pred, y_true, null_val=np.nan)
         loss2 = self.separate_loss(query, pos.detach(), neg.detach())
         loss3 = self.compact_loss(query, pos.detach())
         return loss1 + self.lamb * loss2 + self.lamb1 * loss3
