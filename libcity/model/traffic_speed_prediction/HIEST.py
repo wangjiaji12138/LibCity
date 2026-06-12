@@ -201,7 +201,7 @@ class HIEST(AbstractTrafficStateModel):
         # adaptive layer numbers
         self.apt_layer = config.get('apt_layer', True)
         if self.apt_layer:
-            self.layers = np.int(
+            self.layers = int(
                 np.round(np.log((((self.input_window - 1) / (self.blocks * (self.kernel_size - 1))) + 1)) / np.log(2)))
             print('# of layers change to %s' % self.layers)
 

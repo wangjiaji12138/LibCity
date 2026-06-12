@@ -1,0 +1,1 @@
+python run_model.py --task traffic_state_pred --dataset LaDe_SH --model AGCRN

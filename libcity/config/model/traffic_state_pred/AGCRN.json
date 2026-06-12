@@ -5,12 +5,15 @@
   "cheb_order": 2,
   "bidir_adj_mx": true,
 
+  "input_window": 24,
+  "output_window": 24,
+
   "scaler": "standard",
-  "load_external": false,
+  "load_external": true,
   "normal_external": false,
   "ext_scaler": "none",
-  "add_time_in_day": false,
-  "add_day_in_week": false,
+  "add_time_in_day": true,
+  "add_day_in_week": true,
 
   "max_epoch": 100,
   "learner": "adam",
@@ -18,5 +21,5 @@
   "lr_decay": false,
   "clip_grad_norm": false,
   "use_early_stop": true,
-  "patience": 50
+  "patience": 15
 }
