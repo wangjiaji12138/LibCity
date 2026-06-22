@@ -10,12 +10,16 @@ class DataProcessor:
                 city: str = "sh",
                 grid_size: float = 0.05,
                 time_col: str = "pickup_time",
-                time_size: str = "1h",
+                time_size: str = "30min",
+                day_start_hour: int = 8,
+                day_end_hour: int = 20,
                  ) -> None:
         self.city = city
         self.grid_size = grid_size
         self.time_col = time_col
         self.time_size = time_size
+        self.day_start_hour = day_start_hour
+        self.day_end_hour = day_end_hour
 
         # 数据路径
         script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -63,16 +67,31 @@ class DataProcessor:
 
         # 按时间分组
         self.processed_data = self.processed_data.set_index('datetime')
-        groups = self.processed_data.groupby(pd.Grouper(freq=self.time_size))
+        self.processed_data = self.processed_data.between_time(
+            f'{self.day_start_hour:02d}:00:00',
+            f'{self.day_end_hour:02d}:59:59'
+        )
+        groups = self.processed_data.groupby(pd.Grouper(freq=self.time_size, label='left', closed='left'))
 
         # 构建完整时间范围（包括没有数据的时段）
-        # 注意：groupby(pd.Grouper) 会将时间对齐到整点，因此需要使用相同的时间基准
+        # 使用 origin='start_day' 保持时间从每天 00:00 开始，与 groupby 对齐
         min_time = self.processed_data.index.min()
         max_time = self.processed_data.index.max()
-        # 使用 origin='start_day' 确保时间从整点开始，与 groupby 对齐
-        full_time_range = pd.date_range(start=min_time.floor('h'), end=max_time.floor('h'), freq=self.time_size)
+        full_time_range = pd.date_range(
+            start=min_time.floor('D') + pd.Timedelta(hours=self.day_start_hour),
+            end=max_time.floor('D') + pd.Timedelta(hours=self.day_end_hour, minutes=59, seconds=59),
+            freq=self.time_size
+        )
 
         # 创建时间到索引的映射
+        time_to_idx = {ts: i for i, ts in enumerate(full_time_range)}
+
+        # 只保留白天时段
+        from datetime import time as dt_time
+        start_time = dt_time(hour=self.day_start_hour)
+        end_time = dt_time(hour=self.day_end_hour, minute=59, second=59)
+        valid_mask = [(ts.time() >= start_time and ts.time() <= end_time) for ts in full_time_range]
+        full_time_range = full_time_range[valid_mask]
         time_to_idx = {ts: i for i, ts in enumerate(full_time_range)}
 
         # 使用连续 ID 的有效网格列表
@@ -95,8 +114,8 @@ class DataProcessor:
         print('Number of time stamps:{}'.format(len(time_feature)))
 
         # ==================== 生成样本并过滤全零样本 ====================
-        seq_len = 24
-        horizon = 24
+        seq_len = 48
+        horizon = 48
         x_offsets = np.sort(np.concatenate((np.arange(-(seq_len - 1), 1),)))
         y_offsets = np.sort(np.arange(1, horizon + 1))
 
@@ -396,8 +415,10 @@ if __name__ == "__main__":
     parser.add_argument('--city', type=str, help='City name (e.g., sh, cq, jl)')
     parser.add_argument('--all', action='store_true', help='Process all cities')
     parser.add_argument('--grid_size', type=float, default=0.05)
-    parser.add_argument('--time_size', type=str, default="1h")
+    parser.add_argument('--time_size', type=str, default="30min")
     parser.add_argument('--time_col', type=str, default='pickup_time')
+    parser.add_argument('--day_start_hour', type=int, default=8)
+    parser.add_argument('--day_end_hour', type=int, default=20)
 
     args = parser.parse_args()
 
@@ -437,6 +458,8 @@ if __name__ == "__main__":
                 grid_size=args.grid_size,
                 time_col=args.time_col,
                 time_size=args.time_size,
+                day_start_hour=args.day_start_hour,
+                day_end_hour=args.day_end_hour,
             )
             processor.process()
             print(f"✓ Done: {city}")

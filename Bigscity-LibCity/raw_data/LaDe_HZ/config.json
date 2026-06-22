@@ -33,7 +33,7 @@
     "geo_file": "LaDe_HZ",
     "rel_file": "LaDe_HZ",
     "output_dim": 1,
-    "time_intervals": 3600,
+    "time_intervals": 1800,
     "init_weight_inf_or_zero": "inf",
     "set_weight_link_or_dist": "dist",
     "calculate_weight_adj": true,

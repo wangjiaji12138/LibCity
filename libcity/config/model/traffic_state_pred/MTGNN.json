@@ -20,7 +20,6 @@
   "num_split": 1,
   "step_size2": 100,
 
-
   "input_window": 24,
   "output_window": 24,
 

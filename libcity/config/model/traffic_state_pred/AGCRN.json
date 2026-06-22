@@ -17,9 +17,10 @@
 
   "max_epoch": 100,
   "learner": "adam",
-  "learning_rate": 0.003,
+  "learning_rate": 0.001,
   "lr_decay": false,
-  "clip_grad_norm": false,
+  "clip_grad_norm": true,
+  "max_grad_norm": 5,
   "use_early_stop": true,
   "patience": 15
 }

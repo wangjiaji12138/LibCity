@@ -1,9 +1,9 @@
 {
   "num_block": 3,
-  "time_series_emb_dim": 32,
-  "spatial_emb_dim": 32,
-  "temp_dim_tid": 32,
-  "temp_dim_diw": 32,
+  "time_series_emb_dim": 64,
+  "spatial_emb_dim": 64,
+  "temp_dim_tid": 64,
+  "temp_dim_diw": 64,
   "if_spatial": true,
   "if_TiD": true,
   "if_DiW": true,
@@ -19,5 +19,6 @@
   "lr_decay": false,
   "clip_grad_norm": true,
   "max_grad_norm": 5,
-  "use_early_stop": false
+  "use_early_stop": true,
+  "patience":15
 }
