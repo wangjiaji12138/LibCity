@@ -661,4 +661,4 @@ class TESTAM(AbstractTrafficStateModel):
         out = self.predict(batch)
         y_true = self._scaler.inverse_transform(real[..., :self.output_dim])
         y_predicted = self._scaler.inverse_transform(out[..., :self.output_dim])
-        return loss.masked_mae_torch(y_predicted, y_true, 0.0)
+        return loss.masked_mae_torch(y_predicted, y_true)

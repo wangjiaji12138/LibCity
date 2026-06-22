@@ -56,19 +56,19 @@ class TrafficStateEvaluator(AbstractEvaluator):
                 for metric in self.metrics:
                     if metric == 'masked_MAE':
                         self.intermediate_result[metric + '@' + str(i)].append(
-                            loss.masked_mae_torch(y_pred[:, :i], y_true[:, :i], 0,
+                            loss.masked_mae_torch(y_pred[:, :i], y_true[:, :i],
                                                   mask_val=self.mask_val).item())
                     elif metric == 'masked_MSE':
                         self.intermediate_result[metric + '@' + str(i)].append(
-                            loss.masked_mse_torch(y_pred[:, :i], y_true[:, :i], 0,
+                            loss.masked_mse_torch(y_pred[:, :i], y_true[:, :i],
                                                   mask_val=self.mask_val).item())
                     elif metric == 'masked_RMSE':
                         self.intermediate_result[metric + '@' + str(i)].append(
-                            loss.masked_rmse_torch(y_pred[:, :i], y_true[:, :i], 0,
+                            loss.masked_rmse_torch(y_pred[:, :i], y_true[:, :i],
                                                   mask_val=self.mask_val).item())
                     elif metric == 'masked_MAPE':
                         self.intermediate_result[metric + '@' + str(i)].append(
-                            loss.masked_mape_torch(y_pred[:, :i], y_true[:, :i], 0,
+                            loss.masked_mape_torch(y_pred[:, :i], y_true[:, :i],
                                                   mask_val=self.mask_val).item())
                     elif metric == 'MAE':
                         self.intermediate_result[metric + '@' + str(i)].append(
@@ -93,19 +93,19 @@ class TrafficStateEvaluator(AbstractEvaluator):
                 for metric in self.metrics:
                     if metric == 'masked_MAE':
                         self.intermediate_result[metric + '@' + str(i)].append(
-                            loss.masked_mae_torch(y_pred[:, i - 1], y_true[:, i - 1], 0,
+                            loss.masked_mae_torch(y_pred[:, i - 1], y_true[:, i - 1],
                                                   mask_val=self.mask_val).item())
                     elif metric == 'masked_MSE':
                         self.intermediate_result[metric + '@' + str(i)].append(
-                            loss.masked_mse_torch(y_pred[:, i - 1], y_true[:, i - 1], 0,
+                            loss.masked_mse_torch(y_pred[:, i - 1], y_true[:, i - 1],
                                                   mask_val=self.mask_val).item())
                     elif metric == 'masked_RMSE':
                         self.intermediate_result[metric + '@' + str(i)].append(
-                            loss.masked_rmse_torch(y_pred[:, i - 1], y_true[:, i - 1], 0,
+                            loss.masked_rmse_torch(y_pred[:, i - 1], y_true[:, i - 1],
                                                   mask_val=self.mask_val).item())
                     elif metric == 'masked_MAPE':
                         self.intermediate_result[metric + '@' + str(i)].append(
-                            loss.masked_mape_torch(y_pred[:, i - 1], y_true[:, i - 1], 0,
+                            loss.masked_mape_torch(y_pred[:, i - 1], y_true[:, i - 1],
                                                   mask_val=self.mask_val).item())
                     elif metric == 'MAE':
                         self.intermediate_result[metric + '@' + str(i)].append(

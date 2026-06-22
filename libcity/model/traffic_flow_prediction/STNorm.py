@@ -194,5 +194,5 @@ class STNorm(AbstractTrafficStateModel):
         y_predicted = self.predict(batch)  # prediction results
         y_true = y_true[..., :self.out_dim]
         y_predicted = y_predicted[..., :self.out_dim]
-        res = loss.masked_mae_torch(y_predicted, y_true, 0)
+        res = loss.masked_mae_torch(y_predicted, y_true)
         return res

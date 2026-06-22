@@ -308,7 +308,7 @@ class STDN(AbstractTrafficStateModel):
         y_predicted = self.predict(batch)
         y_true = self._scaler.inverse_transform(y_true[..., :self.output_dim])
         y_predicted = self._scaler.inverse_transform(y_predicted[..., :self.output_dim])
-        res = loss.masked_mse_torch(y_predicted, y_true, 0)
+        res = loss.masked_mse_torch(y_predicted, y_true)
         return res
 
     def predict(self, batch):

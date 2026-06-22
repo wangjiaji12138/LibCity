@@ -529,11 +529,11 @@ class MTGNN(AbstractTrafficStateModel):
                 self._logger.info('Current batches_seen is {}'.format(batches_seen))
             if self.use_curriculum_learning:
                 return loss.masked_mae_torch(y_predicted[:, :self.task_level, :, :],
-                                             y_true[:, :self.task_level, :, :], 0)
+                                             y_true[:, :self.task_level, :, :])
             else:
-                return loss.masked_mae_torch(y_predicted, y_true, 0)
+                return loss.masked_mae_torch(y_predicted, y_true)
         else:
-            return loss.masked_mae_torch(y_predicted, y_true, 0)
+            return loss.masked_mae_torch(y_predicted, y_true)
 
     def predict(self, batch, idx=None):
         return self.forward(batch, idx)

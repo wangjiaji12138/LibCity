@@ -50,13 +50,13 @@ class ETAExecutor(TrafficStateExecutor):
             elif self.train_loss.lower() == 'quantile':
                 lf = loss.quantile_loss
             elif self.train_loss.lower() == 'masked_mae':
-                lf = partial(loss.masked_mae_torch, null_val=0)
+                lf = partial(loss.masked_mae_torch, )
             elif self.train_loss.lower() == 'masked_mse':
-                lf = partial(loss.masked_mse_torch, null_val=0)
+                lf = partial(loss.masked_mse_torch, )
             elif self.train_loss.lower() == 'masked_rmse':
-                lf = partial(loss.masked_rmse_torch, null_val=0)
+                lf = partial(loss.masked_rmse_torch, )
             elif self.train_loss.lower() == 'masked_mape':
-                lf = partial(loss.masked_mape_torch, null_val=0)
+                lf = partial(loss.masked_mape_torch, )
             elif self.train_loss.lower() == 'r2':
                 lf = loss.r2_score_torch
             elif self.train_loss.lower() == 'evar':
