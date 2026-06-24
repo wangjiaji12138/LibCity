@@ -173,7 +173,7 @@ class DataProcessor:
         """生成 LibCity 格式文件: .geo, .dyna, .rel, config.json, 以及 npz 样本文件"""
         script_dir = os.path.dirname(os.path.abspath(__file__))
         dataset_name = f"LaDe_{self.city.upper()}"
-        output_dir = os.path.join(script_dir, "Bigscity-LibCity", "raw_data", dataset_name)
+        output_dir = os.path.join(script_dir, "raw_data", dataset_name)
         if not os.path.exists(output_dir):
             os.makedirs(output_dir)
 
@@ -228,8 +228,7 @@ class DataProcessor:
         dyna_df.to_csv(os.path.join(output_dir, f'{dataset_name}.dyna'), index=False)
         print(f"LibCity .dyna saved: ({len(dyna_df)} records)")
 
-        # 3. 生成 .rel 文件（基于网格邻接的稀疏图）
-        # 只保留物理相邻（上下左右+对角）的网格之间的边
+        # 3. 生成 .rel 文件（基于所有grid之间的地理距离全连接图）
         rel_data = []
         rel_id = 0
         centers = []
@@ -238,41 +237,27 @@ class DataProcessor:
             lat_center = (grid[3] + grid[4]) / 2
             centers.append((lat_center, lng_center))
 
-        # 计算网格行列数
-        n_lng = int((self.gridSplitter.lng_max - self.gridSplitter.lng_min) / self.grid_size) + 1
-        n_lat = int((self.gridSplitter.lat_max - self.gridSplitter.lat_min) / self.grid_size) + 1
-
-        # 定义8邻域（上下左右+4个对角）
-        directions = [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (-1, 1), (1, -1), (1, 1)]
-
+        # 全连接：计算所有grid对之间的距离（只取上三角避免重复）
         for i in range(N):
-            i_row = i // n_lng  # 网格的行号
-            i_col = i % n_lng   # 网格的列号
-
-            for di, dj in directions:
-                j_row, j_col = i_row + di, i_col + dj
-                # 检查是否在边界内
-                if 0 <= j_row < n_lat and 0 <= j_col < n_lng:
-                    j = j_row * n_lng + j_col
-                    if j < N and j > i:  # 只添加上三角（避免重复），且j>i确保唯一
-                        dist = geodesic(centers[i], centers[j]).kilometers
-                        rel_data.append({
-                            'rel_id': rel_id,
-                            'type': 'geo',
-                            'origin_id': i,
-                            'destination_id': j,
-                            'distance': round(dist, 6)
-                        })
-                        rel_id += 1
-                        # 添加反向边（无向图）
-                        rel_data.append({
-                            'rel_id': rel_id,
-                            'type': 'geo',
-                            'origin_id': j,
-                            'destination_id': i,
-                            'distance': round(dist, 6)
-                        })
-                        rel_id += 1
+            for j in range(i + 1, N):
+                dist = geodesic(centers[i], centers[j]).kilometers
+                rel_data.append({
+                    'rel_id': rel_id,
+                    'type': 'geo',
+                    'origin_id': i,
+                    'destination_id': j,
+                    'distance': round(dist, 6)
+                })
+                rel_id += 1
+                # 添加反向边（无向图）
+                rel_data.append({
+                    'rel_id': rel_id,
+                    'type': 'geo',
+                    'origin_id': j,
+                    'destination_id': i,
+                    'distance': round(dist, 6)
+                })
+                rel_id += 1
 
         rel_df = pd.DataFrame(rel_data)
         rel_df.to_csv(os.path.join(output_dir, f'{dataset_name}.rel'), index=False)

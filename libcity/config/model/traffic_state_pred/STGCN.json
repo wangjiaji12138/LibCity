@@ -8,19 +8,21 @@
   "bidir_adj_mx": true,
 
   "scaler": "standard",
-  "load_external": false,
+  "load_external": true,
   "normal_external": false,
   "ext_scaler": "none",
-  "add_time_in_day": false,
-  "add_day_in_week": false,
+  "add_time_in_day": true,
+  "add_day_in_week": true,
 
   "max_epoch": 100,
   "learner": "rmsprop",
-  "learning_rate": 0.001,
+  "learning_rate": 1e-3,
   "lr_decay": true,
   "lr_scheduler": "steplr",
-  "lr_decay_ratio": 0.7,
+  "lr_decay_ratio": 0.99,
   "step_size": 5,
-  "clip_grad_norm": false,
-  "use_early_stop": false
+  "clip_grad_norm": true,
+  "max_grad_norm":5,
+  "use_early_stop": true,
+  "patience": 15
 }

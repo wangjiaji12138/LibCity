@@ -24,10 +24,10 @@
     "batch_size": 16,
 
     "seed": 0,
-    "max_epoch": 300,
+    "max_epoch": 100,
     "learner": "adamw",
     "learning_rate": 1e-3,
-    "weight_decay": 0.05,
+    "weight_decay": 0,
     "lr_decay": true,
     "lr_scheduler": "cosinelr",
     "lr_eta_min": 1e-4,
@@ -37,15 +37,14 @@
     "clip_grad_norm": true,
     "max_grad_norm": 5,
     "use_early_stop": true,
-    "patience": 50,
+    "patience": 15,
     "step_size": 1562,
     "task_level": 0,
-    "use_curriculum_learning": true,
+    "use_curriculum_learning": false,
     "random_flip": true,
     "huber_delta": 1,
     "quan_delta": 0.25,
     "bidir": false,
     "far_mask_delta": 5,
-    "dtw_delta": 5,
-    "set_loss": "masked_mae"
+    "dtw_delta": 5
 }
