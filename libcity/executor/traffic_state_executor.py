@@ -379,7 +379,6 @@ class TrafficStateExecutor(AbstractExecutor):
             if 'proto_dist' in info:
                 self._logger.info(
                     f'[Proto] pred={info["pred"]:.4f} | '
-                    f'info_nce={info["info_nce"]:.4f} | '
                     f'contrastive={info["contrastive"]:.4f} | '
                     f'entropy={info["entropy"]:.4f} | '
                     f'weights(proto_loss={info.get("proto_loss_weight", 0):.2f}, entropy={info.get("entropy_loss_weight", 0):.2f}) | '

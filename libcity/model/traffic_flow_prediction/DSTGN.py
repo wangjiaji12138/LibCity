@@ -86,21 +86,15 @@ class SpatialPrototypeModule(nn.Module):
         B, T, N, D = node_features.shape
         node_features_flat = node_features.reshape(B * T, N, D)
 
-        node_proj = self.assign_proj(node_features_flat)
+        node_proj = self.assign_proj(node_features_flat).detach()
         node_proj = F.normalize(node_proj, p=2, dim=-1)
         prototypes_norm = F.normalize(self.prototypes, p=2, dim=-1)
-        assign_logits = torch.matmul(node_proj, prototypes_norm.transpose(0, 1)) / self.temperature
-        assign_weights = F.softmax(assign_logits, dim=-1)
+        sim = torch.matmul(node_proj, prototypes_norm.transpose(0, 1)) / self.temperature
+        pos_sim = sim.max(dim=-1)[0]
+        exp_sim = torch.exp(sim)
+        loss = -torch.log(pos_sim / (exp_sim.sum(dim=-1) + 1e-8))
 
-        total_weight = assign_weights.sum(dim=1, keepdim=True).transpose(1, 2).clamp(min=1e-8)
-        proto_centers = torch.einsum('bnm,bnc->bmc', assign_weights, node_proj) / total_weight
-        proto_centers = F.normalize(proto_centers, p=2, dim=-1)
-        sim_matrix = torch.matmul(proto_centers, proto_centers.transpose(1, 2))
-
-        M = self.num_prototypes
-        indices = torch.triu_indices(M, M, offset=1, device=proto_centers.device)
-        pos_sims = sim_matrix[:, indices[0], indices[1]]
-        return torch.clamp(pos_sims - 0.2, min=0).mean()
+        return loss.mean()
 
     def get_adjacency_consistency_loss(self, assignments: Tensor) -> Tensor:
         if self.geo_adj is None:

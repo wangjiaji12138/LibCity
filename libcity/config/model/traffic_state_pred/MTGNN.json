@@ -13,13 +13,13 @@
   "layers": 3,
   "propalpha": 0.05,
   "tanhalpha": 3,
-  "layer_norm_affline": false,
+  "layer_norm_affline": true,
   "use_curriculum_learning": false,
   "step_size1": 1,
   "task_level": 0,
   "num_split": 1,
   "step_size2": 100,
-
+  "batch_size": 16,
   "input_window": 24,
   "output_window": 24,
 
