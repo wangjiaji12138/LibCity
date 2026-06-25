@@ -3,7 +3,7 @@
   "learner": "adam",
   "learning_rate": 1e-3,
   "lr_epsilon": 1e-8,
-  "weight_decay": 0.0001,
+  "weight_decay": 1e-4,
 
   "lr_decay": true,
   "lr_scheduler": "multisteplr",
@@ -12,13 +12,31 @@
 
   "use_early_stop": true,
   "patience": 15,
+  "input_window": 24,
+  "output_window": 24,
+  "scaler": "standard",
+  "load_external": true,
+  "normal_external": false,
+  "ext_scaler": "none",
+  "add_time_in_day": true,
+  "add_day_in_week": true,
 
   "steps_per_day": 48,
-  "input_embedding_dim": 48,
-  "spatial_embedding_dim": 48,
+  "input_embedding_dim": 64,
+  "spatial_embedding_dim": 64,
+  "tod_embedding_dim": 32,
+  "dow_embedding_dim": 32,
   "feed_forward_dim": 256,
   "num_heads": 4,
   "num_layers": 3,
   "dropout": 0.1,
-  "use_mixed_proj": true
+
+  "use_mixed_proj": true,
+
+  "num_prototypes": 8,
+  "prototype_dim": 64,
+  "prototype_temperature": 0.5,
+  "info_nce_temperature": 0.07,
+  "prototype_loss_weight": 0.1,
+  "entropy_loss_weight": 0.1
 }

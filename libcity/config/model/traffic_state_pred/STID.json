@@ -4,6 +4,8 @@
   "spatial_emb_dim": 64,
   "temp_dim_tid": 64,
   "temp_dim_diw": 64,
+  "input_window": 24,
+  "output_window": 24,
   "if_spatial": true,
   "if_TiD": true,
   "if_DiW": true,

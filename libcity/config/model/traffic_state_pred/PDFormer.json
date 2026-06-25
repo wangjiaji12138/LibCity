@@ -8,10 +8,10 @@
     "qkv_bias": true,
     "drop": 0,
     "attn_drop": 0,
-    "drop_path": 0.3,
+    "drop_path": 0.1,
     "s_attn_size": 3,
     "t_attn_size": 1,
-    "enc_depth": 6,
+    "enc_depth": 3,
     "type_ln": "post",
     "type_short_path": "hop",
 
@@ -22,6 +22,9 @@
     "add_time_in_day": true,
     "add_day_in_week": true,
     "batch_size": 16,
+
+    "input_window": 24,
+    "output_window": 24,
 
     "seed": 0,
     "max_epoch": 100,

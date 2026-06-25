@@ -13,7 +13,10 @@
     "use_pre": false,
     "dy_graph": true,
     "sta_graph": true,
-  
+    
+    "input_window": 24,
+    "output_window": 24,
+
     "scaler": "standard",
     "load_external": true,
     "normal_external": false,
@@ -24,7 +27,7 @@
     "max_epoch": 100,
     "batch_size": 32,
     "learner": "adam",
-    "learning_rate": 0.002,
+    "learning_rate": 1e-3,
     "weight_decay": 1e-5,
     "lr_epsilon": 1e-8,
     "lr_decay": true,
@@ -34,5 +37,5 @@
     "clip_grad_norm": true,
     "max_grad_norm": 5,
     "use_early_stop": true,
-    "patience": 30
+    "patience": 15
 }

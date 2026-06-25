@@ -7,6 +7,16 @@
   "e_layers": 5,
   "d_model": 128,
   "d_ff": 256,
+  "input_window": 24,
+  "output_window": 24,
+
+  "scaler": "standard",
+  "load_external": true,
+  "normal_external": false,
+  "ext_scaler": "none",
+  "add_time_in_day": true,
+  "add_day_in_week": true,
+
   "use_norm": 0,
   "freq": "h",
   "embed": "timeF",

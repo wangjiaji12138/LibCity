@@ -4,7 +4,10 @@
   "normal_external": false,
   "ext_scaler": "none",
   "add_time_in_day": true,
-  "add_day_in_week": false,
+  "add_day_in_week": true,
+
+  "input_window": 24,
+  "output_window": 24,
 
   "max_epoch": 100,
   "learner": "adam",
@@ -16,5 +19,5 @@
   "clip_grad_norm": true,
   "max_grad_norm": 5,
   "use_early_stop": true,
-  "patience": 50
+  "patience": 15
 }

@@ -373,6 +373,18 @@ class TrafficStateExecutor(AbstractExecutor):
             if self.clip_grad_norm:
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
             self.optimizer.step()
+        # 收集模型的额外信息（如原型分配统计）
+        if hasattr(self.model, 'get_last_losses'):
+            info = self.model.get_last_losses()
+            if 'proto_dist' in info:
+                self._logger.info(
+                    f'[Proto] pred={info["pred"]:.4f} | '
+                    f'info_nce={info["info_nce"]:.4f} | '
+                    f'contrastive={info["contrastive"]:.4f} | '
+                    f'entropy={info["entropy"]:.4f} | '
+                    f'weights(proto_loss={info.get("proto_loss_weight", 0):.2f}, entropy={info.get("entropy_loss_weight", 0):.2f}) | '
+                    f'dist={info["proto_dist"]}'
+                )
         return losses
 
     def _valid_epoch(self, eval_dataloader, epoch_idx, loss_func=None):

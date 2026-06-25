@@ -1,10 +1,9 @@
 {
   "max_epoch": 100,
-
   "learner": "adam",
   "learning_rate": 0.001,
   "lr_epsilon": 1e-8,
-  "weight_decay": 0.0001,
+  "weight_decay": 1e-4,
 
   "lr_decay": true,
   "lr_scheduler": "multisteplr",
@@ -14,10 +13,12 @@
   "use_early_stop": true,
   "patience": 15,
 
+  "input_window": 24,
+  "output_window": 24,
   "steps_per_day": 48,
   "input_dim": 3,
   "output_dim": 1,
-  "input_embedding_dim": 24,
+  "input_embedding_dim": 48,
   "tod_embedding_dim": 24,
   "dow_embedding_dim": 24,
   "spatial_embedding_dim": 0,
