@@ -380,8 +380,8 @@ class TrafficStateExecutor(AbstractExecutor):
                 self._logger.info(
                     f'[Proto] pred={info["pred"]:.4f} | '
                     f'contrastive={info["contrastive"]:.4f} | '
-                    f'entropy={info["entropy"]:.4f} | '
-                    f'weights(proto_loss={info.get("proto_loss_weight", 0):.2f}, entropy={info.get("entropy_loss_weight", 0):.2f}) | '
+                    f'sinkhorn_reg={info["sinkhorn_reg"]:.4f} | '
+                    f'proto_loss_weight={info.get("proto_loss_weight", 0):.4f} | '
                     f'dist={info["proto_dist"]}'
                 )
         return losses

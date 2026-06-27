@@ -35,7 +35,7 @@
 
   "use_mlp_proj": true,
 
-  "num_prototypes": 8,
-  "prototype_dim": 64,
-  "prototype_temperature": 1.0
+  "num_prototypes": 16,
+  "prototype_temperature": 1.0,
+  "prototype_loss_weight": 0.1
 }
