@@ -318,7 +318,14 @@ class DSTGN(AbstractTrafficStateModel):
             for _ in range(self.num_layers)
         ])
 
-        self.graph_conv = GraphConvLayer(self.model_dim, self.dropout)
+        # 多层图卷积，支持残差连接
+        self.gcn_depth = config.get('gcn_depth', 2)
+        self.graph_convs = nn.ModuleList([
+            GraphConvLayer(self.model_dim, self.dropout)
+            for _ in range(self.gcn_depth)
+        ])
+        self.gcn_ln = nn.LayerNorm(self.model_dim)
+
         self.output_proj = nn.Linear(self.model_dim, self.out_dim)
 
         self.apply(self._init_weights)
@@ -377,12 +384,15 @@ class DSTGN(AbstractTrafficStateModel):
 
         # 对时间窗口取平均，减少噪声
         dynamic_adj = dynamic_adj.mean(dim=1)  # (B, N, N)
-        BT = B * T
-        dynamic_adj = dynamic_adj.unsqueeze(1).expand(B, T, N, N).reshape(BT, N, N)
 
-        x = self.graph_conv(x, dynamic_adj)
-
+        # 多层图卷积，保持 (B, T, N, D) 格式
+        for i, gcn in enumerate(self.graph_convs):
+            # 动态邻接矩阵 reshape 为 (B*T, N, N) 供图卷积使用
+            adj_2d = dynamic_adj.unsqueeze(1).expand(B, T, N, N).reshape(B * T, N, N)
+            x = gcn(x, adj_2d)
+        x = self.gcn_ln(x)
         x = F.relu(x)
+
         x = self.output_proj(x)  # (B, T, N, out_dim)
         output = x
 

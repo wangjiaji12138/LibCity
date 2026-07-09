@@ -31,15 +31,16 @@
   "feed_forward_dim": 256,
   "num_heads": 4,
   "num_layers": 3,
+  "gcn_depth": 2,
   "dropout": 0.1,
   "use_early_stop": true,
   "patience": 15,
 
   "use_mlp_proj": true,
 
-  "num_prototypes": 8,
-  "prototype_dim": 32,
-  "prototype_temperature": 1.0,
-  "prototype_loss_weight": 0.1,
-  "geo_smooth_weight": 0.1
+  "num_prototypes": 16,
+  "prototype_dim": 128,
+  "prototype_temperature": 0.1,
+  "prototype_loss_weight": 0.01,
+  "geo_smooth_weight": 0.01
 }
