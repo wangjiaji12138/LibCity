@@ -22,14 +22,15 @@ class SpatialPrototypeModule(nn.Module):
 
     功能：
     1. 构建M个可学习的原型（空间范式）
-    2. 根据节点特征分配节点到原型（Sinkhorn-Knopp 正则化）
+    2. 根据节点特征分配节点到原型（Sinkhorn-Knopp 正则化 + 地理约束）
     3. 原型和编码器联合更新（无 detach）
     """
 
     def __init__(self, num_nodes: int, model_dim: int,
                  num_prototypes: int = 16, prototype_dim: int = 32,
                  temperature: float = 0.1, geo_adj: Tensor = None,
-                 sinkhorn_iterations: int = 3, sinkhorn_epsilon: float = 0.03):
+                 sinkhorn_iterations: int = 3, sinkhorn_epsilon: float = 0.03,
+                 geo_smooth_weight: float = 0.1):
         super().__init__()
         self.num_nodes = num_nodes
         self.model_dim = model_dim
@@ -38,6 +39,7 @@ class SpatialPrototypeModule(nn.Module):
         self.temperature = temperature
         self.sinkhorn_iterations = sinkhorn_iterations
         self.sinkhorn_epsilon = sinkhorn_epsilon
+        self.geo_smooth_weight = geo_smooth_weight
 
         self.prototypes = nn.Parameter(torch.empty(num_prototypes, prototype_dim))
         nn.init.xavier_uniform_(self.prototypes)
@@ -45,14 +47,39 @@ class SpatialPrototypeModule(nn.Module):
         self.proto_proj = nn.Linear(model_dim, prototype_dim)
         self.geo_adj = geo_adj
 
-    def _sinkhorn_knopp(self, logits: Tensor) -> Tensor:
-        """Sinkhorn-Knopp 算法：让分配矩阵按行和列均匀分布，使不同原型被均匀使用"""
+    def _sinkhorn_knopp(self, logits: Tensor, geo_adj: Tensor = None) -> Tensor:
+        """
+        Sinkhorn-Knopp 算法：让分配矩阵按行和列均匀分布，使不同原型被均匀使用。
+        如果提供 geo_adj，则在每次迭代后对相邻节点进行加权平滑。
+        """
         Q = logits
-        for _ in range(self.sinkhorn_iterations):
+        for i in range(self.sinkhorn_iterations):
             Q = Q - torch.logsumexp(Q, dim=-1, keepdim=True)
             Q = Q - torch.logsumexp(Q, dim=-2, keepdim=True)
+            if geo_adj is not None and i < self.sinkhorn_iterations - 1:
+                Q = self._geo_smooth(Q, geo_adj)
         return torch.exp(Q)
 
+    def _geo_smooth(self, Q: Tensor, geo_adj: Tensor) -> Tensor:
+        """
+        地理平滑：对 Sinkhorn 分配矩阵进行空间平滑
+        让相邻节点倾向于有相似的原型分配
+
+        Q: (B*T, N, M) - Sinkhorn 分配
+        geo_adj: (N, N) - 二值邻接矩阵
+        """
+        BT, N, M = Q.shape
+        geo_adj_2d = geo_adj.to(Q.device)
+
+        deg = geo_adj_2d.sum(dim=-1, keepdim=True).clamp(min=1)
+        D_inv = 1.0 / deg
+        W = (geo_adj_2d * D_inv).unsqueeze(0).expand(BT, N, N)
+
+        Q_smoothed = (Q.transpose(-2, -1) @ W.transpose(-2, -1)).transpose(-2, -1)
+        alpha = self.geo_smooth_weight
+        Q = (1 - alpha) * Q + alpha * Q_smoothed
+        return Q
+ 
     def forward(self, node_features: Tensor):
         B, T, N, D = node_features.shape
         node_features_flat = node_features.reshape(B * T, N, D)
@@ -62,7 +89,7 @@ class SpatialPrototypeModule(nn.Module):
         prototypes_norm = F.normalize(self.prototypes, p=2, dim=-1)
         proto_logits = torch.matmul(node_proj, prototypes_norm.transpose(0, 1)) / self.temperature
 
-        proto = self._sinkhorn_knopp(proto_logits)
+        proto = self._sinkhorn_knopp(proto_logits, self.geo_adj)
 
         return self.prototypes, proto.reshape(B, T, N, self.num_prototypes)
 
@@ -74,9 +101,14 @@ class SpatialPrototypeModule(nn.Module):
         node_proj = F.normalize(node_proj, p=2, dim=-1)
         prototypes_norm = F.normalize(self.prototypes, p=2, dim=-1)
         sim = torch.matmul(node_proj, prototypes_norm.transpose(0, 1)) / self.temperature
-        pos_sim = sim.max(dim=-1)[0]
+        
+        sim = torch.clamp(sim, min=-50, max=50)
         exp_sim = torch.exp(sim)
-        loss = -torch.log(pos_sim / (exp_sim.sum(dim=-1) + 1e-8))
+        
+        pos_sim = sim.max(dim=-1)[0]
+        pos_sim = torch.clamp(pos_sim, min=-50, max=50)
+        
+        loss = -pos_sim + torch.log(exp_sim.sum(dim=-1) + 1e-8)
 
         return loss.mean()
 
@@ -104,15 +136,15 @@ class AttentionLayer(nn.Module):
         self.out_proj = nn.Linear(model_dim, model_dim)
 
     def forward(self, query: Tensor, key: Tensor, value: Tensor) -> Tensor:
-        B = query.shape[0]
+        B, T, D = query.shape
 
         query = self.FC_Q(query)
         key = self.FC_K(key)
         value = self.FC_V(value)
 
-        query = torch.cat(torch.split(query, self.head_dim, dim=-1), dim=0)
-        key = torch.cat(torch.split(key, self.head_dim, dim=-1), dim=0)
-        value = torch.cat(torch.split(value, self.head_dim, dim=-1), dim=0)
+        query = query.view(B, T, self.num_heads, self.head_dim).transpose(1, 2).contiguous().view(B * T, self.num_heads, self.head_dim)
+        key = key.view(B, T, self.num_heads, self.head_dim).transpose(1, 2).contiguous().view(B * T, self.num_heads, self.head_dim)
+        value = value.view(B, T, self.num_heads, self.head_dim).transpose(1, 2).contiguous().view(B * T, self.num_heads, self.head_dim)
 
         key = key.transpose(-1, -2)
         attn_score = (query @ key) / self.head_dim ** 0.5
@@ -126,7 +158,7 @@ class AttentionLayer(nn.Module):
         attn_score = torch.softmax(attn_score, dim=-1)
         out = attn_score @ value
 
-        out = torch.cat(torch.split(out, B, dim=0), dim=-1)
+        out = out.view(B, self.num_heads, T, self.head_dim).transpose(1, 2).contiguous().view(B, T, D)
         return self.out_proj(out)
 
 
@@ -147,26 +179,78 @@ class SelfAttentionLayer(nn.Module):
         self.dropout1 = nn.Dropout(dropout)
         self.dropout2 = nn.Dropout(dropout)
 
-    def forward(self, x: Tensor, dim: int = -2) -> Tensor:
-        x = x.transpose(dim, -2)
-        residual = x
-        x = self.attn(x, x, x)
-        x = self.dropout1(x)
-        x = self.ln1(residual + x)
+    def forward(self, x: Tensor) -> Tensor:
+        if x.dim() == 3:
+            residual = x
+            x = self.attn(x, x, x)
+            x = self.dropout1(x)
+            x = self.ln1(residual + x)
+            residual = x
+            x = self.feed_forward(x)
+            x = self.dropout2(x)
+            x = self.ln2(residual + x)
+            return x
+        elif x.dim() == 4:
+            B, T, N, D = x.shape
+            x = x.permute(0, 2, 1, 3).reshape(B * N, T, D)
+            residual = x
+            x = self.attn(x, x, x)
+            x = self.dropout1(x)
+            x = self.ln1(residual + x)
+            residual = x
+            x = self.feed_forward(x)
+            x = self.dropout2(x)
+            x = self.ln2(residual + x)
+            x = x.reshape(B, N, T, D).permute(0, 2, 1, 3)
+            return x
+        else:
+            raise ValueError(f"Unexpected input dimension: {x.dim()}, expected 3 or 4")
 
-        residual = x
-        x = self.feed_forward(x)
-        x = self.dropout2(x)
-        x = self.ln2(residual + x)
 
-        return x.transpose(dim, -2)
+class GraphConvLayer(nn.Module):
+    """
+    图卷积层：使用对称归一化拉普拉斯进行空间信息聚合
+
+    输入：
+        x: (B, T, N, D) - 节点特征
+        adj: (N, N) 或 (B, T, N, N) - 动态加权邻接矩阵
+    输出：
+        (B, T, N, D) - 聚合后的特征
+    """
+
+    def __init__(self, model_dim: int, dropout: float = 0.1):
+        super().__init__()
+        self.linear = nn.Linear(model_dim, model_dim)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x: Tensor, adj: Tensor) -> Tensor:
+        B, T, N, D = x.shape
+        residual = x
+
+        x = x.transpose(1, 2).reshape(B * T, N, D)
+
+        if adj.dim() == 2:
+            adj = adj.unsqueeze(0).unsqueeze(0).expand(B, T, N, N)
+        adj = adj.reshape(B * T, N, N)
+
+        A_hat = adj + torch.eye(N, device=adj.device, dtype=adj.dtype)
+        deg = A_hat.sum(dim=-1, keepdim=True).clamp(min=1)
+        A_norm = A_hat / deg
+        x = A_norm @ x
+        x = x.reshape(B, T, N, D)
+        
+        x = self.linear(x)
+        x = x + residual
+        x = F.layer_norm(x, (D,))
+        x = self.dropout(F.relu(x))
+        return x
 
 
 class DSTGN(AbstractTrafficStateModel):
     """
-    双重时空图网络，参考 STAEformer 架构。
+    双重时空图网络
 
-    当前恢复 prototype 分支，用于对比实验。
+    架构：特征嵌入 -> 时间注意力 -> 原型生成 + 动态邻接矩阵 -> 图卷积 -> 输出投影
     """
 
     def __init__(self, config, data_feature):
@@ -183,7 +267,6 @@ class DSTGN(AbstractTrafficStateModel):
         self.spatial_embedding_dim = config.get('spatial_embedding_dim', 32)
         self.tod_embedding_dim = config.get('tod_embedding_dim', 32)
         self.dow_embedding_dim = config.get('dow_embedding_dim', 32)
-        self.steps_per_day = config.get('steps_per_day', 48)
 
         self.model_dim = (
             self.input_embedding_dim +
@@ -202,19 +285,14 @@ class DSTGN(AbstractTrafficStateModel):
         self.num_prototypes = config.get('num_prototypes', 8)
         self.prototype_dim = config.get('prototype_dim', 64)
         self.prototype_temperature = config.get('prototype_temperature', 1)
-        self.prototype_loss_weight = config.get('prototype_loss_weight', 0.01)
+        self.prototype_loss_weight = config.get('prototype_loss_weight', 0.5)
+        self.geo_smooth_weight = config.get('geo_smooth_weight', 0.1)
 
         self.geo_adj = self._build_geo_adj(data_feature)
 
         self._logger.info(
             f'DSTGN | nodes={self.num_nodes}, model_dim={self.model_dim}, '
-            f'(input={self.input_embedding_dim}, spatial={self.spatial_embedding_dim}, '
-            f'tod={self.tod_embedding_dim}, dow={self.dow_embedding_dim}), '
             f'layers={self.num_layers}'
-        )
-        self._logger.info(
-            f'Prototype | M={self.num_prototypes}, dim={self.spatial_embedding_dim}, '
-            f'assign_temp={self.prototype_temperature}, proto_loss={self.prototype_loss_weight}'
         )
 
         self.input_proj = nn.Linear(1, self.input_embedding_dim)
@@ -228,29 +306,21 @@ class DSTGN(AbstractTrafficStateModel):
             num_nodes=self.num_nodes,
             model_dim=self.model_dim,
             num_prototypes=self.num_prototypes,
-            prototype_dim=self.spatial_embedding_dim,
+            prototype_dim=self.prototype_dim,
             temperature=self.prototype_temperature,
-            geo_adj=self.geo_adj
+            geo_adj=self.geo_adj,
+            geo_smooth_weight=self.geo_smooth_weight
         )
 
-        # 时间注意力层（纯时间建模）
+        self.time_linear = nn.Linear(self.model_dim, self.model_dim)
         self.attn_layers_t = nn.ModuleList([
             SelfAttentionLayer(self.model_dim, self.feed_forward_dim,
                               self.num_heads, self.dropout)
             for _ in range(self.num_layers)
         ])
 
-        # 空间注意力层（在 proto 注入后，全部使用 D+M 维度）
-        self.attn_layers_s = nn.ModuleList([
-            SelfAttentionLayer(self.model_dim + self.num_prototypes, self.feed_forward_dim,
-                              self.num_heads, self.dropout)
-            for _ in range(self.num_layers)
-        ])
-
-        # 空间注意力块输出投影: D+M -> D
-        self.spatial_out_proj = nn.Linear(self.model_dim + self.num_prototypes, self.model_dim)
-
-        self.temporal_proj = nn.Conv1d(self.out_dim, self.out_window, kernel_size=1)
+        self.graph_conv = GraphConvLayer(self.model_dim, self.dropout)
+        self.skip_proj = nn.Linear(self.model_dim, self.model_dim)
         self.output_proj = nn.Linear(self.model_dim, self.out_dim)
 
         self.apply(self._init_weights)
@@ -272,33 +342,28 @@ class DSTGN(AbstractTrafficStateModel):
         adj_mx = data_feature.get('adj_mx')
         if adj_mx is not None:
             adj = torch.from_numpy(adj_mx).float()
-            return (adj > 0).float()
+            return adj
         return None
 
     def forward(self, batch: dict, return_prototype_info: bool = False):
-        # ==============================================================
-        # 输入: batch['X'] shape = (B, T, N, 3)
-        # 其中 3 = [value, time_of_day, day_of_week]
-        # ==============================================================
         B, T, N, _ = batch['X'].shape
 
-        # 特征嵌入
-        # X[..., 0:1]: (B, T, N, 1) -> (B, T, N, input_embedding_dim)
         x_val = self.input_proj(batch['X'][..., 0:1])
-        # X[..., 1:2]: (B, T, N, 1) -> (B, T, N, tod_embedding_dim)
         x_tod = self.tod_proj(batch['X'][..., 1:2])
-        # X[..., 2:3]: (B, T, N, 1) -> (B, T, N, dow_embedding_dim)
         x_dow = self.dow_proj(batch['X'][..., 2:3])
-        # node_emb: (N, spatial_embedding_dim) -> (B, T, N, spatial_embedding_dim)
-        spatial_emb = self.node_emb.unsqueeze(0).unsqueeze(0).expand(B, T, -1, -1)
-
-        # 拼接初始特征: (B, T, N, model_dim)
-        # model_dim = input_embedding_dim + spatial_embedding_dim + tod_embedding_dim + dow_embedding_dim
+        spatial_emb = self.node_emb.unsqueeze(0).unsqueeze(1).expand(B, T, -1, -1)
         x = torch.cat([x_val, spatial_emb, x_tod, x_dow], dim=-1)
 
-        # ==============================================================
-        # 空间原型模块 (Spatial Prototype Module)
-        # ==============================================================
+        x = self.time_linear(x)
+        skip = self.skip_proj(x)
+
+        for attn_t in self.attn_layers_t:
+            residual = x
+            x = attn_t(x)
+            s = self.skip_proj(x)
+            skip = s + skip
+            x = x + residual[:, :, :, -x.size(3):]
+
         prototypes, proto = self.prototype_module(x)
         proto_info = {
             'prototypes': prototypes,
@@ -306,67 +371,38 @@ class DSTGN(AbstractTrafficStateModel):
             'embedded_features': x,
         }
 
-        # ==============================================================
-        # 时间注意力块（Temporal Attention Block）
-        # 3层纯时间建模: (B, T, N, D)
-        # ==============================================================
-        for attn_t in self.attn_layers_t:
-            x = attn_t(x, dim=1)
+        sim = torch.matmul(proto, proto.transpose(-2, -1))
+        sim = F.relu(sim)
 
-        # ==============================================================
-        # 注入原型信息（Inject Prototype Information）
-        # proto: (B, T, N, M) 拼接到 x: (B, T, N, D+M)
-        # ==============================================================
-        x = torch.cat([x, proto], dim=-1)
+        geo_adj = self.geo_adj
+        if geo_adj is not None:
+            geo_adj = geo_adj.to(proto.device)
+            geo_adj_3d = geo_adj.unsqueeze(0).unsqueeze(0)
+            dynamic_adj = (sim * geo_adj_3d).relu()
+        else:
+            dynamic_adj = sim
 
-        # ==============================================================
-        # 空间注意力块（Spatial Attention Block）
-        # 3层空间建模: (B, T, N, D+M)
-        # ==============================================================
-        for attn_s in self.attn_layers_s:
-            x = attn_s(x, dim=2)
+        BT = B * T
+        dynamic_adj = dynamic_adj.reshape(BT, N, N)
 
-        # 投影回 D 维度: (B, T, N, D+M) -> (B, T, N, D)
-        x = self.spatial_out_proj(x)
+        x = self.graph_conv(x, dynamic_adj)
 
-        # ==============================================================
-        # 输出映射 (Output Projection)
-        # ==============================================================
-
-        # Step 1: 转置 (B, T, N, D) -> (B, N, T, D)
-        x = x.transpose(1, 2)
-
-        # Step 2: 重塑 (B, N, T, D) -> (B*N, T, D)
-        x = x.reshape(B * N, T, self.model_dim)
-
-        # Step 3: 特征投影 (B*N, T, D) -> (B*N, T, out_dim)
-        # output_proj: Linear(D -> out_dim)
-        x = self.output_proj(x.reshape(-1, self.model_dim))
-        x = x.view(B * N, T, self.out_dim)
-
-        # Step 4: 时间投影 (B*N, T, out_dim) -> (B*N, T, out_window)
-        # temporal_proj: Conv1d(in_window, out_window, kernel_size=1)
-        # 输入格式 (B*N, C, L) = (B*N, out_dim, T)
-        x = x.permute(0, 2, 1)  # (B*N, T, out_dim) -> (B*N, out_dim, T)
-        x = self.temporal_proj(x)  # (B*N, out_dim, T) -> (B*N, out_window, T)
-
-        # Step 5: 重塑回四维 (B*N, out_window, T) -> (B, T, N, out_window)
-        x = x.permute(0, 2, 1)  # (B*N, out_window, T) -> (B*N, T, out_window)
-        x = x.reshape(B, N, T, self.out_window)
-        x = x.permute(0, 2, 1, 3)  # (B, N, T, out_window) -> (B, T, N, out_window)
+        skip = self.skip_proj(x) + skip
+        x = F.relu(skip)
+        x = self.output_proj(x)
+        output = x
 
         if return_prototype_info:
-            return x, proto_info
-        return x
+            return output, proto_info
+        return output
 
     def predict(self, batch: dict) -> Tensor:
-        x = batch['X'][:, :self.in_window]
-        return self.forward({'X': x})
+        return self.forward(batch, return_prototype_info=False)
 
     def calculate_loss(self, batch: dict) -> Tensor:
         y_pred, proto_info = self.forward(batch, return_prototype_info=True)
 
-        y_true = batch['y'][:, :self.out_window]
+        y_true = batch['y']
         y_pred_for_loss = y_pred[..., :self.out_dim]
         y_true_for_loss = y_true[..., :self.out_dim]
         y_pred_inv = self._scaler.inverse_transform(y_pred_for_loss)

@@ -1,0 +1,10 @@
+{
+  "dataset": "LaDe_CQ",
+  "workspace_root": ".",
+  "input_coordinate": [106.551557, 29.563009],
+  "top_k": 5,
+  "output": {
+    "print": true,
+    "json_path": "output/nearest_station_result.json"
+  }
+}
