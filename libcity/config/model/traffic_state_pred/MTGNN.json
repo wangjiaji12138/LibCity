@@ -29,6 +29,9 @@
   "add_time_in_day": true,
   "add_day_in_week": true,
 
+  "train_rate": 0.6,
+  "eval_rate": 0.2,
+  
   "max_epoch": 100,
   "learner": "adam",
   "learning_rate": 1e-3,

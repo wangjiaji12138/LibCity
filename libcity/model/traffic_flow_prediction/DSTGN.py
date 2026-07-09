@@ -112,13 +112,6 @@ class SpatialPrototypeModule(nn.Module):
 
         return loss.mean()
 
-    def get_sinkhorn_reg_loss(self, proto: Tensor) -> Tensor:
-        """Sinkhorn 正则化损失：促进原型均匀分布"""
-        B, T, N, M = proto.shape
-        proto_usage = proto.reshape(B * T * N, M).mean(dim=0) + 1e-8
-        uniform = torch.ones_like(proto_usage) / self.num_prototypes
-        return F.kl_div(proto_usage.log(), uniform, reduction='batchmean')
-
 
 class AttentionLayer(nn.Module):
     """在指定维度（-2）上执行多头自注意力。"""
@@ -209,11 +202,17 @@ class SelfAttentionLayer(nn.Module):
 
 class GraphConvLayer(nn.Module):
     """
-    图卷积层：使用对称归一化拉普拉斯进行空间信息聚合
+    图卷积层：使用重归一化邻接矩阵进行空间信息聚合
+
+    计算方式：
+        A_hat = A + I（添加自环）
+        D_hat = diag(sum(A_hat))
+        A_norm = D_hat^{-1} @ A_hat（行归一化）
+        output = A_norm @ X @ W
 
     输入：
         x: (B, T, N, D) - 节点特征
-        adj: (N, N) 或 (B, T, N, N) - 动态加权邻接矩阵
+        adj: (N, N) 或 (B*T, N, N) - 动态加权邻接矩阵
     输出：
         (B, T, N, D) - 聚合后的特征
     """
@@ -320,7 +319,6 @@ class DSTGN(AbstractTrafficStateModel):
         ])
 
         self.graph_conv = GraphConvLayer(self.model_dim, self.dropout)
-        self.skip_proj = nn.Linear(self.model_dim, self.model_dim)
         self.output_proj = nn.Linear(self.model_dim, self.out_dim)
 
         self.apply(self._init_weights)
@@ -355,14 +353,9 @@ class DSTGN(AbstractTrafficStateModel):
         x = torch.cat([x_val, spatial_emb, x_tod, x_dow], dim=-1)
 
         x = self.time_linear(x)
-        skip = self.skip_proj(x)
 
         for attn_t in self.attn_layers_t:
-            residual = x
             x = attn_t(x)
-            s = self.skip_proj(x)
-            skip = s + skip
-            x = x + residual[:, :, :, -x.size(3):]
 
         prototypes, proto = self.prototype_module(x)
         proto_info = {
@@ -382,14 +375,15 @@ class DSTGN(AbstractTrafficStateModel):
         else:
             dynamic_adj = sim
 
+        # 对时间窗口取平均，减少噪声
+        dynamic_adj = dynamic_adj.mean(dim=1)  # (B, N, N)
         BT = B * T
-        dynamic_adj = dynamic_adj.reshape(BT, N, N)
+        dynamic_adj = dynamic_adj.unsqueeze(1).expand(B, T, N, N).reshape(BT, N, N)
 
         x = self.graph_conv(x, dynamic_adj)
 
-        skip = self.skip_proj(x) + skip
-        x = F.relu(skip)
-        x = self.output_proj(x)
+        x = F.relu(x)
+        x = self.output_proj(x)  # (B, T, N, out_dim)
         output = x
 
         if return_prototype_info:
@@ -409,24 +403,20 @@ class DSTGN(AbstractTrafficStateModel):
         y_true_inv = self._scaler.inverse_transform(y_true_for_loss)
         pred_loss = loss.masked_mae_torch(y_pred_inv, y_true_inv)
 
-        proto = proto_info['proto']
         contrastive_loss = self.prototype_module.get_contrastive_loss(proto_info['embedded_features'])
-        sinkhorn_reg_loss = self.prototype_module.get_sinkhorn_reg_loss(proto)
 
-        hard_proto = torch.argmax(proto, dim=-1)
+        hard_proto = torch.argmax(proto_info['proto'], dim=-1)
         proto_counts = torch.bincount(hard_proto.view(-1), minlength=self.num_prototypes).float()
         proto_ratio = proto_counts / proto_counts.sum()
         self._last_losses = {
             'pred': pred_loss.item(),
             'contrastive': contrastive_loss.item(),
-            'sinkhorn_reg': sinkhorn_reg_loss.item(),
             'proto_loss_weight': self.prototype_loss_weight,
             'proto_dist': proto_ratio.cpu().tolist()
         }
 
         total_loss = pred_loss
         total_loss = total_loss + self.prototype_loss_weight * contrastive_loss
-        total_loss = total_loss + self.prototype_loss_weight * sinkhorn_reg_loss
 
         return total_loss
 
