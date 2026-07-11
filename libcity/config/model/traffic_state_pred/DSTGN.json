@@ -12,6 +12,7 @@
 
   "input_window": 24,
   "output_window": 24,
+  "steps_per_day": 48,
   "train_rate": 0.6,
   "eval_rate": 0.2,
 
@@ -23,7 +24,6 @@
   "add_day_in_week": true,
 
   "batch_size": 64,
-  "steps_per_day": 48,
   "input_embedding_dim": 32,
   "spatial_embedding_dim": 32,
   "tod_embedding_dim": 16,
@@ -41,6 +41,6 @@
   "num_prototypes": 16,
   "prototype_dim": 128,
   "prototype_temperature": 0.1,
-  "prototype_loss_weight": 0.01,
-  "geo_smooth_weight": 0.01
+  "prototype_loss_weight": 0.1,
+  "geo_smooth_weight": 0.1
 }
