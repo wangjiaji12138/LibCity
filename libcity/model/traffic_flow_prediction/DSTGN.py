@@ -469,7 +469,7 @@ class DSTGN(AbstractTrafficStateModel):
         """构建图卷积层"""
         self.graph_convs = nn.ModuleList([
             ProtoAwareGraphConvLayer(self.model_dim, self.num_prototypes, self.dropout)
-            for _ in range(self.gcn_depth)
+            for _ in range(self.num_layers)
         ])
         self.gcn_ln = nn.LayerNorm(self.model_dim)
 
