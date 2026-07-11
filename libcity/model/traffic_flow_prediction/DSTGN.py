@@ -27,7 +27,7 @@ class SpatialPrototypeModule(nn.Module):
 
     功能：
     1. 构建M个可学习的原型（空间范式）
-    2. 根据节点特征分配节点到原型（Sinkhorn-Knopp 正则化 + 地理约束）
+    2. 根据节点特征分配节点到原型（Sinkhorn-Knopp 正则化）
     3. 原型和编码器联合更新（无 detach）
 
     Args:
@@ -36,16 +36,13 @@ class SpatialPrototypeModule(nn.Module):
         num_prototypes: 原型数量
         prototype_dim: 原型维度
         temperature: Sinkhorn 温度参数
-        geo_adj: 地理邻接矩阵
         sinkhorn_iterations: Sinkhorn 算法迭代次数
-        geo_smooth_weight: 地理平滑权重
     """
 
     def __init__(self, num_nodes: int, model_dim: int,
                  num_prototypes: int = 16, prototype_dim: int = 32,
                  temperature: float = 0.1, contrastive_temperature: float = 0.1,
-                 geo_adj: Tensor | None = None,
-                 sinkhorn_iterations: int = 3, geo_smooth_weight: float = 0.1):
+                 sinkhorn_iterations: int = 3):
         super().__init__()
         self.num_nodes = num_nodes
         self.model_dim = model_dim
@@ -54,7 +51,6 @@ class SpatialPrototypeModule(nn.Module):
         self.temperature = temperature
         self.contrastive_temperature = contrastive_temperature
         self.sinkhorn_iterations = sinkhorn_iterations
-        self.geo_smooth_weight = geo_smooth_weight
 
         self.prototypes = nn.Parameter(torch.empty(num_prototypes, prototype_dim))
         nn.init.xavier_uniform_(self.prototypes)
@@ -63,23 +59,6 @@ class SpatialPrototypeModule(nn.Module):
             nn.Linear(model_dim, prototype_dim),
             nn.LayerNorm(prototype_dim)
         )
-
-        # 预计算地理平滑矩阵
-        self._init_geo_smooth_matrix(geo_adj)
-
-    def _init_geo_smooth_matrix(self, geo_adj: Tensor | None) -> None:
-        """预计算地理平滑矩阵（在 GPU 上执行）"""
-        if geo_adj is None:
-            self._geo_smooth_matrix: Tensor | None = None
-            return
-
-        # 确保在 GPU 上执行
-        device = geo_adj.device
-        geo_adj_tensor = geo_adj.float()
-        deg = geo_adj_tensor.sum(dim=-1, keepdim=True).clamp(min=1)
-        D_inv = 1.0 / deg
-        geo_smooth_matrix = geo_adj_tensor * D_inv
-        self.register_buffer('_geo_smooth_matrix', geo_smooth_matrix)
 
     def _sinkhorn_knopp(self, logits: Tensor) -> Tensor:
         """
@@ -97,24 +76,7 @@ class SpatialPrototypeModule(nn.Module):
             Q = Q - torch.logsumexp(Q, dim=-1, keepdim=True)
             # 列归一化
             Q = Q - torch.logsumexp(Q, dim=-2, keepdim=True)
-            # 地理平滑（除最后一次迭代）
-            if self._geo_smooth_matrix is not None and i < self.sinkhorn_iterations - 1:
-                Q = self._geo_smooth(Q)
         return torch.exp(Q)
-
-    def _geo_smooth(self, Q: Tensor) -> Tensor:
-        """
-        地理平滑：对 Sinkhorn 分配矩阵进行空间平滑。
-
-        让相邻节点倾向于有相似的原型分配
-
-        Args:
-            Q: (BT, N, M) - Sinkhorn 分配
-        """
-        # W @ Q: (N,N) is broadcast left -> (BT,N,N) @ (BT,N,M) -> (BT,N,M)
-        Q_smoothed = self._geo_smooth_matrix @ Q
-        alpha = self.geo_smooth_weight
-        return (1 - alpha) * Q + alpha * Q_smoothed
 
     def forward(self, node_features: Tensor) -> tuple[Tensor, Tensor]:
         """
@@ -204,8 +166,11 @@ class SpatialPrototypeModule(nn.Module):
 
         loss = loss_per_anchor[valid].mean()
 
-        if loss.isnan().item():
-            return torch.tensor(0.0, device=node_emb.device, dtype=node_emb.dtype)
+        loss = loss_per_anchor[valid].mean()
+
+        # NaN 防护: NaN 通常来自 0*inf，已在 denom 和 +1e-8 处夹紧；这里
+        # 在 GPU 上用 torch.where 屏蔽，避免触发 .item() 同步
+        loss = torch.where(torch.isnan(loss), torch.zeros_like(loss), loss)
 
         return loss
 
@@ -263,25 +228,55 @@ class AttentionLayer(nn.Module):
 
         self.out_proj = nn.Linear(model_dim, model_dim)
 
+        # 预注册的 causal mask（仅当 mask=True 时使用，设备随 .to() 跟随）
+        if self.mask:
+            self.register_buffer(
+                '_causal_mask',
+                torch.empty(0, dtype=torch.bool),
+            )
+
+    def _get_causal_mask(self, N: int, device) -> Tensor:
+        """惰性创建/缓存 causal mask，无需每个 step 重新分配"""
+        m = getattr(self, '_causal_mask', None)
+        if m is None or m.numel() != N * N or m.device != device:
+            m = torch.ones(N, N, dtype=torch.bool, device=device).tril()
+            self.register_buffer('_causal_mask', m)
+            self._causal_mask = m
+        return self._causal_mask
+
     def forward(self, query, key, value):
         # Q,K,V all have shape (B, T, N, D) in DSTGN
         B, T, N, D = query.shape
         H, h = self.num_heads, self.head_dim
 
-        # Linear projection -> reshape to (B, H, T, N, h) -> merge to (B*H, T, N, h)
-        Q = self.FC_Q(query).view(B, H, T, N, h).permute(0, 1, 3, 2, 4).reshape(B * H, T, N, h)
-        K = self.FC_K(key).view(B, H, T, N, h).permute(0, 1, 3, 2, 4).reshape(B * H, T, N, h)
-        V = self.FC_V(value).view(B, H, T, N, h).permute(0, 1, 3, 2, 4).reshape(B * H, T, N, h)
+        # Linear projection -> (B, H, T, N, h)
+        Q = self.FC_Q(query).view(B, H, T, N, h)
+        K = self.FC_K(key).view(B, H, T, N, h)
+        V = self.FC_V(value).view(B, H, T, N, h)
 
-        # Scaled dot-product attention: (B*H, T, N, h) @ (B*H, T, h, N) -> (B*H, T, N, N)
-        attn_score = (Q @ K.transpose(-1, -2)) / (h ** 0.5)
+        # 合并 B 和 H 为单一 batch 维度；F.scaled_dot_product_attention 会自动
+        # 走 FlashAttention / memory-efficient / math 后端，显著快于手写实现
+        Q = Q.permute(0, 1, 3, 2, 4).reshape(B * H, T, N, h)
+        K = K.permute(0, 1, 3, 2, 4).reshape(B * H, T, N, h)
+        V = V.permute(0, 1, 3, 2, 4).reshape(B * H, T, N, h)
 
-        if self.mask:
-            mask = torch.ones(N, N, dtype=torch.bool, device=query.device).tril()
-            attn_score.masked_fill_(~mask, -torch.inf)
+        attn_mask = self._get_causal_mask(N, query.device) if self.mask else None
 
-        attn_score = torch.softmax(attn_score, dim=-1)
-        out = attn_score @ V  # (B*H, T, N, h)
+        if hasattr(F, 'scaled_dot_product_attention'):
+            # PyTorch 2.0+：自动使用 FlashAttention / memory-efficient 后端
+            out = F.scaled_dot_product_attention(
+                Q, K, V,
+                attn_mask=attn_mask,
+                dropout_p=0.0,
+                is_causal=False,
+            )
+        else:
+            # 旧版回退：手写实现（保持环境兼容）
+            attn_score = (Q @ K.transpose(-1, -2)) / (h ** 0.5)
+            if attn_mask is not None:
+                attn_score = attn_score.masked_fill(~attn_mask, -torch.inf)
+            attn_score = torch.softmax(attn_score, dim=-1)
+            out = attn_score @ V
 
         # Restore: (B*H, T, N, h) -> (B, H, T, N, h) -> (B, T, N, D)
         out = out.reshape(B, H, T, N, h).permute(0, 2, 3, 1, 4).reshape(B, T, N, D)
@@ -434,7 +429,6 @@ class DSTGN(AbstractTrafficStateModel):
         self.prototype_temperature = config.get('prototype_temperature', 0.3)
         self.contrastive_loss_weight = config.get('contrastive_loss_weight', 0.1)
         self.contrastive_temperature = config.get('contrastive_temperature', 0.1)
-        self.geo_smooth_weight = config.get('geo_smooth_weight', 0.1)
         self.sinkhorn_iterations = config.get('sinkhorn_iterations', 2)
         self.use_proto = config.get('use_proto', True)
 
@@ -472,15 +466,17 @@ class DSTGN(AbstractTrafficStateModel):
             for _ in range(self.num_layers)
         ])
 
-        """构建并注册地理邻接矩阵及其归一化形式（在 GPU 上执行）"""
+        """构建并注册地理邻接矩阵与 (geo_adj + I)（在 GPU 上执行）"""
         adj_mx = data_feature.get('adj_mx')
         if adj_mx is not None:
-            # 将邻接矩阵移动到模型所在设备
             adj = torch.from_numpy(adj_mx).float().to(self.device)
             self.register_buffer('_geo_adj', adj)
+            # (geo_adj + I) 一次性创建，避免每个 forward 都重新分配 eye
+            self.register_buffer(
+                '_geo_adj_hat',
+                adj + torch.eye(self.num_nodes, device=self.device, dtype=adj.dtype),
+            )
 
-            # 存储原始地理邻接矩阵
-            self.register_buffer('_geo_adj', adj)
         if self.use_proto:
             self.prototype_module = SpatialPrototypeModule(
                 num_nodes=self.num_nodes,
@@ -489,8 +485,6 @@ class DSTGN(AbstractTrafficStateModel):
                 prototype_dim=self.prototype_dim,
                 temperature=self.prototype_temperature,
                 contrastive_temperature=self.contrastive_temperature,
-                geo_adj=getattr(self, '_geo_adj', None),
-                geo_smooth_weight=self.geo_smooth_weight,
                 sinkhorn_iterations=self.sinkhorn_iterations,
             )
         
@@ -508,58 +502,63 @@ class DSTGN(AbstractTrafficStateModel):
 
     def _compute_dynamic_adj(self, x: Tensor, proto: Tensor | None) -> Tensor:
         """
-        计算动态邻接矩阵
+        计算动态邻接矩阵（已在时间维度上聚合到 (B, N, N)）
 
         Args:
-            x: (B, T, N, D) 嵌入特征
+            x: (B, T, N, D) 嵌入特征（仅用于推断 device/dtype，未参与计算）
             proto: (B, T, N, M) 原型分配概率
 
         Returns:
             (B, N, N) 对时间平均后的动态邻接矩阵
         """
         B, T, N, _ = x.shape
+        device, dtype = x.device, x.dtype
 
         if proto is not None:
+            # sim = proto_t @ proto_t^T: (B, T, N, M) x (B, T, M, N) -> (B, T, N, N)
             sim = torch.matmul(proto, proto.transpose(-2, -1))
             sim = F.relu(sim)
+            # 沿时间维求均值 -> (B, N, N)
+            sim = sim.mean(dim=1)
         else:
-            sim = torch.ones(B, T, N, N, device=x.device, dtype=x.dtype)
+            sim = torch.ones(B, N, N, device=device, dtype=dtype)
 
-        # 结合地理邻接矩阵
         if hasattr(self, '_geo_adj') and self._geo_adj is not None:
-            dynamic_adj = sim * self._geo_adj  # broadcast (B,T,N,N)*(N,N)->(B,T,N,N), already non-negative
+            dynamic_adj = sim * self._geo_adj  # broadcast (B,N,N)*(N,N) -> (B,N,N)
         else:
             dynamic_adj = sim
 
-        # 对时间窗口取平均
-        return dynamic_adj.mean(dim=1)
+        return dynamic_adj
 
     def _normalize_adj(self, dynamic_adj: Tensor, B: int, T: int, N: int) -> Tensor:
         """
         归一化动态邻接矩阵
 
         Args:
-            dynamic_adj: (B, N, N) 对时间平均后的动态邻接矩阵
+            dynamic_adj: (B, N, N) 动态邻接矩阵
             B, T, N: 批次、时间、节点维度
 
         Returns:
             (B*T, N, N) 归一化后的邻接矩阵
         """
-        if hasattr(self, '_geo_adj') and self._geo_adj is not None:
-            geo_adj = self._geo_adj
-            if geo_adj.device != dynamic_adj.device:
-                geo_adj = geo_adj.to(dynamic_adj.device)
+        device, dtype = dynamic_adj.device, dynamic_adj.dtype
 
-            A_hat = geo_adj + torch.eye(N, device=dynamic_adj.device, dtype=dynamic_adj.dtype)
-            A_dynamic = A_hat * dynamic_adj
-            deg = A_dynamic.sum(dim=-1, keepdim=True).clamp(min=1)
-            D_inv_sqrt = deg.pow(0.5).reciprocal()
-            adj_norm = D_inv_sqrt * A_dynamic * D_inv_sqrt.transpose(-2, -1)
+        if hasattr(self, '_geo_adj_hat') and self._geo_adj_hat is not None:
+            geo_hat = self._geo_adj_hat
+            if geo_hat.device != device:
+                geo_hat = geo_hat.to(device)
+
+            # (geo_adj + I) * dynamic_adj, broadcasting (N,N)*(B,N,N)->(B,N,N)
+            A_dynamic = geo_hat.unsqueeze(0) * dynamic_adj
         else:
-            deg = dynamic_adj.sum(dim=-1, keepdim=True).clamp(min=1)
-            D_inv_sqrt = deg.pow(0.5).reciprocal()
-            adj_norm = D_inv_sqrt * dynamic_adj * D_inv_sqrt.transpose(-2, -1)
+            A_dynamic = dynamic_adj
 
+        # 对称归一化：D^{-1/2} A D^{-1/2}
+        deg = A_dynamic.sum(dim=-1, keepdim=True).clamp(min=1)
+        D_inv_sqrt = deg.pow(0.5).reciprocal()
+        adj_norm = D_inv_sqrt * A_dynamic * D_inv_sqrt.transpose(-2, -1)
+
+        # (B, N, N) -> (B, 1, N, N) -> broadcast 到 T -> (B*T, N, N)
         return adj_norm.unsqueeze(1).expand(B, T, N, N).reshape(B * T, N, N)
 
     def _init_weights(self, m) -> None:
@@ -660,18 +659,19 @@ class DSTGN(AbstractTrafficStateModel):
                 proto_info['proto']
             )
 
-            # 原型分布统计
-            hard_proto = torch.argmax(proto_info['proto'], dim=-1)
-            proto_counts = torch.bincount(
-                hard_proto.view(-1), minlength=self.num_prototypes
-            ).float()
-            proto_ratio = proto_counts / proto_counts.sum()
+            # === 原型分布统计（GPU 累计 + 每步同步 cpu） ===
+            with torch.no_grad():
+                hard_proto = torch.argmax(proto_info['proto'], dim=-1).view(-1)
+                proto_counts = torch.bincount(
+                    hard_proto, minlength=self.num_prototypes
+                ).float()
+                proto_ratio = proto_counts / proto_counts.sum().clamp(min=1)
 
             self._last_losses.update({
                 'contrastive': contrastive_loss.item(),
                 'contrastive_loss_weight': self.contrastive_loss_weight,
                 'contrastive_loss_contrib': (self.contrastive_loss_weight * contrastive_loss).item(),
-                'proto_dist': proto_ratio.cpu().tolist()
+                'proto_dist': proto_ratio.cpu().tolist(),
             })
 
             total_loss = total_loss + self.contrastive_loss_weight * contrastive_loss
