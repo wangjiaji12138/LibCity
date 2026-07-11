@@ -43,7 +43,8 @@ class SpatialPrototypeModule(nn.Module):
 
     def __init__(self, num_nodes: int, model_dim: int,
                  num_prototypes: int = 16, prototype_dim: int = 32,
-                 temperature: float = 0.1, geo_adj: Tensor | None = None,
+                 temperature: float = 0.1, contrastive_temperature: float = 0.1,
+                 geo_adj: Tensor | None = None,
                  sinkhorn_iterations: int = 3, geo_smooth_weight: float = 0.1):
         super().__init__()
         self.num_nodes = num_nodes
@@ -51,6 +52,7 @@ class SpatialPrototypeModule(nn.Module):
         self.num_prototypes = num_prototypes
         self.prototype_dim = prototype_dim
         self.temperature = temperature
+        self.contrastive_temperature = contrastive_temperature
         self.sinkhorn_iterations = sinkhorn_iterations
         self.geo_smooth_weight = geo_smooth_weight
 
@@ -109,10 +111,8 @@ class SpatialPrototypeModule(nn.Module):
         Args:
             Q: (BT, N, M) - Sinkhorn 分配
         """
-        geo_smooth_matrix = self._geo_smooth_matrix
-        BT, N, M = Q.shape
-        W = geo_smooth_matrix.unsqueeze(0).expand(BT, N, N)
-        Q_smoothed = (Q.transpose(-2, -1) @ W.transpose(-2, -1)).transpose(-2, -1)
+        # W @ Q: (N,N) is broadcast left -> (BT,N,N) @ (BT,N,M) -> (BT,N,M)
+        Q_smoothed = self._geo_smooth_matrix @ Q
         alpha = self.geo_smooth_weight
         return (1 - alpha) * Q + alpha * Q_smoothed
 
@@ -139,22 +139,21 @@ class SpatialPrototypeModule(nn.Module):
 
         return self.prototypes, proto_assign.reshape(B, T, N, self.num_prototypes)
 
-    def get_contrastive_loss(self, node_emb: Tensor, proto_assign: Tensor,
-                             margin: float = 0.5) -> Tensor:
+    def get_contrastive_loss(self, node_emb: Tensor, proto_assign: Tensor) -> Tensor:
         """
-        原型引导的节点级对比损失（优化版本）
+        原型引导的节点级对比损失（InfoNCE / NT-Xent）
 
-        思想：利用原型分配作为"软标签"，对每个时间步的节点表示构造三元组：
+        思想：利用原型分配作为"软标签"，对每个节点构造正负样本的对比损失：
         - Anchor: 节点 i 的表示 z_i
         - Positive: 与 i 属于同一原型的节点 j 的表示 z_j
         - Negative: 与 i 属于不同原型的节点 k 的表示 z_k
 
-        损失：L = max(||z_i - z_j||² - ||z_i - z_k||² + margin, 0)
+        损失：L = -log( exp(sim(i,j)/τ) / Σ_k exp(sim(i,k)/τ) )
+        其中 sim(i,k) = <z_i, z_k> / (||z_i||·||z_k||)，τ 是温度系数
 
         Args:
             node_emb: (B, T, N, D) 节点嵌入
             proto_assign: (B, T, N, M) 原型分配概率
-            margin: 对比损失间隔
 
         Returns:
             对比损失标量
@@ -167,38 +166,44 @@ class SpatialPrototypeModule(nn.Module):
         emb = node_emb.reshape(B * T, N, D)          # (BT, N, D)
         labels = hard_assign.reshape(B * T, N)       # (BT, N)
 
-        # 预计算: 每个节点的 L2 范数
-        node_sqnorm = emb.pow(2).sum(-1)            # (BT, N)
-        # 预计算: 所有节点对的内积 (BT, N, N)，利用对称性只需算一次
-        inner_prod = torch.bmm(emb, emb.transpose(1, 2))  # (BT, N, N)
+        # 归一化嵌入（余弦相似度）
+        emb_norm = F.normalize(emb, p=2, dim=-1)      # (BT, N, D)
+        sim_matrix = torch.bmm(emb_norm, emb_norm.transpose(1, 2))  # (BT, N, N)
 
-        # 预计算: 标签相等矩阵 (BT, N, N)
-        # labels[:, i] == labels[:, j] 对所有 i,j
-        same_label = labels.unsqueeze(2) == labels.unsqueeze(1)  # (BT, N, N)
-        # 排除自身: same_label[b, i, i] = False
+        # 排除自身: sim[b, i, i] = 0
         diag_mask = 1.0 - torch.eye(N, device=emb.device).unsqueeze(0)  # (1, N, N)
+        sim_matrix = sim_matrix * diag_mask
+
+        # 标签相等矩阵
+        same_label = labels.unsqueeze(2) == labels.unsqueeze(1)  # (BT, N, N)
         pos_mask = same_label.float() * diag_mask        # (BT, N, N)
-        neg_mask = (1.0 - same_label.float())              # (BT, N, N)
+        neg_mask = (1.0 - same_label.float())             # (BT, N, N)
 
-        # 每个 anchor 有多少正/负样本
-        pos_cnt = pos_mask.sum(-1).clamp(min=1)   # (BT, N)
-        neg_cnt = neg_mask.sum(-1).clamp(min=1)   # (BT, N)
-
-        # 用展开式计算距离: ||z_i - z_j||² = ||z_i||² + ||z_j||² - 2*<z_i, z_j>
-        # dist[b, i, j] = sqnorm[i] + sqnorm[j] - 2*inner_prod[i,j]
-        sq_dists = node_sqnorm.unsqueeze(2) + node_sqnorm.unsqueeze(1) - 2.0 * inner_prod
-        sq_dists = sq_dists.clamp(min=0)   # 数值稳定
-
-        # 正/负样本均值距离
-        pos_sum = (sq_dists * pos_mask).sum(-1)   # (BT, N)
-        neg_sum = (sq_dists * neg_mask).sum(-1)   # (BT, N)
-        pos_dist = pos_sum / pos_cnt
-        neg_dist = neg_sum / neg_cnt
-
-        # 对比损失
-        loss_mat = F.relu(pos_dist - neg_dist + margin)
+        # 过滤无效样本（没有正样本或没有负样本的 anchor）
+        pos_cnt = pos_mask.sum(-1)   # (BT, N)
+        neg_cnt = neg_mask.sum(-1)   # (BT, N)
         valid = (pos_cnt > 0) & (neg_cnt > 0)
-        loss = loss_mat[valid].mean()
+
+        # InfoNCE: -log( exp(sim(i,pos)/τ) / [exp(sim(i,pos)/τ) + Σ_neg exp(sim(i,k)/τ)] )
+        tau = self.contrastive_temperature
+        logits = sim_matrix / tau   # (BT, N, N)
+
+        # 数值稳定化：对每行减去该行最大值
+        logits_max, _ = logits.max(dim=-1, keepdim=True)  # (BT, N, 1)
+        logits_stable = logits - logits_max
+
+        exp_logits = torch.exp(logits_stable) * diag_mask
+
+        # 从 logits 矩阵直接提取正样本 logits（与负样本分母一致的数值稳定化）
+        pos_logits = (logits_stable * pos_mask).sum(-1) / pos_cnt.clamp(min=1)  # (BT, N)
+
+        # 每个 anchor 的 log-sum-exp 分母（正样本 + 负样本）
+        denom_logsumexp = torch.log(exp_logits.sum(-1).clamp(min=1e-8))  # (BT, N)
+
+        # 每个 anchor 的 InfoNCE loss
+        loss_per_anchor = -pos_logits + denom_logsumexp  # (BT, N)
+
+        loss = loss_per_anchor[valid].mean()
 
         if loss.isnan().item():
             return torch.tensor(0.0, device=node_emb.device, dtype=node_emb.dtype)
@@ -260,41 +265,27 @@ class AttentionLayer(nn.Module):
         self.out_proj = nn.Linear(model_dim, model_dim)
 
     def forward(self, query, key, value):
-        # Q    (batch_size, ..., tgt_length, model_dim)
-        # K, V (batch_size, ..., src_length, model_dim)
-        batch_size = query.shape[0]
-        tgt_length = query.shape[-2]
-        src_length = key.shape[-2]
+        # Q,K,V all have shape (B, T, N, D) in DSTGN
+        B, T, N, D = query.shape
+        H, h = self.num_heads, self.head_dim
 
-        query = self.FC_Q(query)
-        key = self.FC_K(key)
-        value = self.FC_V(value)
+        # Linear projection -> reshape to (B, H, T, N, h) -> merge to (B*H, T, N, h)
+        Q = self.FC_Q(query).view(B, H, T, N, h).permute(0, 1, 3, 2, 4).reshape(B * H, T, N, h)
+        K = self.FC_K(key).view(B, H, T, N, h).permute(0, 1, 3, 2, 4).reshape(B * H, T, N, h)
+        V = self.FC_V(value).view(B, H, T, N, h).permute(0, 1, 3, 2, 4).reshape(B * H, T, N, h)
 
-        # Qhead, Khead, Vhead (num_heads * batch_size, ..., length, head_dim)
-        query = torch.cat(torch.split(query, self.head_dim, dim=-1), dim=0)
-        key = torch.cat(torch.split(key, self.head_dim, dim=-1), dim=0)
-        value = torch.cat(torch.split(value, self.head_dim, dim=-1), dim=0)
-
-        key = key.transpose(
-            -1, -2
-        )  # (num_heads * batch_size, ..., head_dim, src_length)
-
-        attn_score = (
-            query @ key
-        ) / self.head_dim**0.5  # (num_heads * batch_size, ..., tgt_length, src_length)
+        # Scaled dot-product attention: (B*H, T, N, h) @ (B*H, T, h, N) -> (B*H, T, N, N)
+        attn_score = (Q @ K.transpose(-1, -2)) / (h ** 0.5)
 
         if self.mask:
-            mask = torch.ones(
-                tgt_length, src_length, dtype=torch.bool, device=query.device
-            ).tril()  # lower triangular part of the matrix
-            attn_score.masked_fill_(~mask, -torch.inf)  # fill in-place
+            mask = torch.ones(N, N, dtype=torch.bool, device=query.device).tril()
+            attn_score.masked_fill_(~mask, -torch.inf)
 
         attn_score = torch.softmax(attn_score, dim=-1)
-        out = attn_score @ value  # (num_heads * batch_size, ..., tgt_length, head_dim)
-        out = torch.cat(
-            torch.split(out, batch_size, dim=0), dim=-1
-        )  # (batch_size, ..., tgt_length, head_dim * num_heads = model_dim)
+        out = attn_score @ V  # (B*H, T, N, h)
 
+        # Restore: (B*H, T, N, h) -> (B, H, T, N, h) -> (B, T, N, D)
+        out = out.reshape(B, H, T, N, h).permute(0, 2, 3, 1, 4).reshape(B, T, N, D)
         out = self.out_proj(out)
 
         return out
@@ -443,7 +434,7 @@ class DSTGN(AbstractTrafficStateModel):
         self.prototype_dim = config.get('prototype_dim', 64)
         self.prototype_temperature = config.get('prototype_temperature', 0.3)
         self.contrastive_loss_weight = config.get('contrastive_loss_weight', 0.1)
-        self.contrastive_margin = config.get('contrastive_margin', 0.5)
+        self.contrastive_temperature = config.get('contrastive_temperature', 0.1)
         self.geo_smooth_weight = config.get('geo_smooth_weight', 0.1)
         self.sinkhorn_iterations = config.get('sinkhorn_iterations', 2)
         self.use_proto = config.get('use_proto', True)
@@ -505,6 +496,7 @@ class DSTGN(AbstractTrafficStateModel):
                 num_prototypes=self.num_prototypes,
                 prototype_dim=self.prototype_dim,
                 temperature=self.prototype_temperature,
+                contrastive_temperature=self.contrastive_temperature,
                 geo_adj=getattr(self, '_geo_adj', None),
                 geo_smooth_weight=self.geo_smooth_weight,
                 sinkhorn_iterations=self.sinkhorn_iterations,
@@ -543,8 +535,7 @@ class DSTGN(AbstractTrafficStateModel):
 
         # 结合地理邻接矩阵
         if hasattr(self, '_geo_adj') and self._geo_adj is not None:
-            geo_adj_3d = self._geo_adj.unsqueeze(0).unsqueeze(0)
-            dynamic_adj = (sim * geo_adj_3d).relu()
+            dynamic_adj = sim * self._geo_adj  # broadcast (B,T,N,N)*(N,N)->(B,T,N,N), already non-negative
         else:
             dynamic_adj = sim
 
@@ -557,7 +548,6 @@ class DSTGN(AbstractTrafficStateModel):
 
         Args:
             dynamic_adj: (B, N, N) 对时间平均后的动态邻接矩阵
-            
             B, T, N: 批次、时间、节点维度
 
         Returns:
@@ -565,12 +555,10 @@ class DSTGN(AbstractTrafficStateModel):
         """
         if hasattr(self, '_geo_adj_norm') and self._geo_adj_norm is not None:
             geo_adj_norm = self._geo_adj_norm
-            # 确保 geo_adj_norm 和 dynamic_adj 在同一设备上
             if geo_adj_norm.device != dynamic_adj.device:
                 geo_adj_norm = geo_adj_norm.to(dynamic_adj.device)
-            
-            adj_norm = geo_adj_norm.unsqueeze(0).expand(B, N, N).clone()
-            adj_norm = adj_norm * dynamic_adj
+
+            adj_norm = geo_adj_norm * dynamic_adj
             deg = adj_norm.sum(dim=-1, keepdim=True).clamp(min=1)
             deg_sqrt = deg.pow(0.5)
             adj_norm = deg_sqrt.reciprocal() * adj_norm * deg_sqrt.reciprocal().transpose(-2, -1)
@@ -672,8 +660,7 @@ class DSTGN(AbstractTrafficStateModel):
         if self.use_proto and proto_info['proto'] is not None:
             contrastive_loss = self.prototype_module.get_contrastive_loss(
                 proto_info['embedded_features'],
-                proto_info['proto'],
-                margin=self.contrastive_margin
+                proto_info['proto']
             )
 
             # 原型分布统计
