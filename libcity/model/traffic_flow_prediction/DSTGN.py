@@ -192,16 +192,15 @@ class SpatialPrototypeModule(nn.Module):
         logits_max, _ = logits.max(dim=-1, keepdim=True)  # (BT, N, 1)
         logits_stable = logits - logits_max
 
-        exp_logits = torch.exp(logits_stable) * diag_mask
+        exp_logits = torch.exp(logits_stable) * diag_mask  # (BT, N, N)
 
-        # 从 logits 矩阵直接提取正样本 logits（与负样本分母一致的数值稳定化）
-        pos_logits = (logits_stable * pos_mask).sum(-1) / pos_cnt.clamp(min=1)  # (BT, N)
-
-        # 每个 anchor 的 log-sum-exp 分母（正样本 + 负样本）
-        denom_logsumexp = torch.log(exp_logits.sum(-1).clamp(min=1e-8))  # (BT, N)
-
-        # 每个 anchor 的 InfoNCE loss
-        loss_per_anchor = -pos_logits + denom_logsumexp  # (BT, N)
+        # 正确 InfoNCE：L = -log( Σ_{j∈pos} exp(s_ij/τ) / Σ_{k≠i} exp(s_ik/τ) )
+        # 分母：所有非自身的 exp logits 之和
+        denom = exp_logits.sum(-1).clamp(min=1e-8)  # (BT, N)
+        # 分子：正样本的 exp logits 之和（先指数后求和，不再除以 count）
+        pos_exp_sum = (exp_logits * pos_mask).sum(-1)  # (BT, N)
+        # 逐样本的 InfoNCE loss
+        loss_per_anchor = -torch.log(pos_exp_sum / denom + 1e-8)  # (BT, N)
 
         loss = loss_per_anchor[valid].mean()
 
@@ -308,8 +307,8 @@ class SelfAttentionLayer(nn.Module):
         self.dropout1 = nn.Dropout(dropout)
         self.dropout2 = nn.Dropout(dropout)
 
-    def forward(self, x, dim=-2):
-        x = x.transpose(dim, -2)
+    def forward(self, x, dim=-3):
+        x = x.transpose(dim, -3)
         # x: (batch_size, ..., length, model_dim)
         residual = x
         out = self.attn(query = x, key = x, value = x)  # (batch_size, ..., length, model_dim)
@@ -597,21 +596,10 @@ class DSTGN(AbstractTrafficStateModel):
             x_conv = tconv(x_conv)  #[B, D, N, T]
             x = x_conv.permute(0, 3, 2, 1) + residual
 
-        # === 原型模块 ===
+        # === 原型模块（用于动态邻接矩阵和对比损失） ===
         proto = None
         if self.use_proto:
             _, proto = self.prototype_module(x)
-            proto_info = {
-                'prototypes': None,
-                'proto': proto,
-                'embedded_features': x,
-            }
-        else:
-            proto_info = {
-                'prototypes': None,
-                'proto': None,
-                'embedded_features': x,
-            }
 
         # === 动态邻接矩阵 ===
         dynamic_adj = self._compute_dynamic_adj(x, proto)
@@ -621,13 +609,27 @@ class DSTGN(AbstractTrafficStateModel):
         for gcn in self.graph_convs:
             x = gcn(x, adj_norm, proto)
         x = self.gcn_ln(x)
-        x = F.relu(x)
+        spatial_features = F.relu(x)  # 图卷积后的空间特征，对比损失作用于此层
 
         # === 输出映射 ===
-        output = x.permute(0, 3, 2, 1) #[B, D, N, T]
+        output = spatial_features.permute(0, 3, 2, 1) #[B, D, N, T]
         output = F.relu(self.end_conv_1(output)) 
         output = self.end_conv_2(output) #[B, 1, N, T]
         output = output.permute(0, 3, 2, 1) #[B, T, N, 1]
+
+        # === 原型信息（必须在 spatial_features 定义之后） ===
+        if self.use_proto:
+            proto_info = {
+                'prototypes': None,
+                'proto': proto,
+                'embedded_features': spatial_features,
+            }
+        else:
+            proto_info = {
+                'prototypes': None,
+                'proto': None,
+                'embedded_features': spatial_features,
+            }
 
         if return_prototype_info:
             return output, proto_info
