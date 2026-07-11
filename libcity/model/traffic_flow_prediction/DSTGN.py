@@ -471,7 +471,6 @@ class DSTGN(AbstractTrafficStateModel):
             ProtoAwareGraphConvLayer(self.model_dim, self.num_prototypes, self.dropout)
             for _ in range(self.num_layers)
         ])
-        self.gcn_ln = nn.LayerNorm(self.model_dim)
 
         """构建并注册地理邻接矩阵及其归一化形式（在 GPU 上执行）"""
         adj_mx = data_feature.get('adj_mx')
@@ -608,7 +607,6 @@ class DSTGN(AbstractTrafficStateModel):
         # === 图卷积 ===
         for gcn in self.graph_convs:
             x = gcn(x, adj_norm, proto)
-        x = self.gcn_ln(x)
         spatial_features = F.relu(x)  # 图卷积后的空间特征，对比损失作用于此层
 
         # === 输出映射 ===
