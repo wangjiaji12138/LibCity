@@ -41,6 +41,7 @@
   "num_prototypes": 16,
   "prototype_dim": 128,
   "prototype_temperature": 0.1,
-  "prototype_loss_weight": 0.1,
+  "contrastive_loss_weight": 0.1,
+  "contrastive_margin": 0.5,
   "geo_smooth_weight": 0.1
 }

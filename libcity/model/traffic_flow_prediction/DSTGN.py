@@ -139,32 +139,71 @@ class SpatialPrototypeModule(nn.Module):
 
         return self.prototypes, proto_assign.reshape(B, T, N, self.num_prototypes)
 
-    def get_contrastive_loss(self, node_features: Tensor) -> Tensor:
+    def get_contrastive_loss(self, node_emb: Tensor, proto_assign: Tensor,
+                             margin: float = 0.5) -> Tensor:
         """
-        计算原型对比损失
+        原型引导的节点级对比损失（优化版本）
+
+        思想：利用原型分配作为"软标签"，对每个时间步的节点表示构造三元组：
+        - Anchor: 节点 i 的表示 z_i
+        - Positive: 与 i 属于同一原型的节点 j 的表示 z_j
+        - Negative: 与 i 属于不同原型的节点 k 的表示 z_k
+
+        损失：L = max(||z_i - z_j||² - ||z_i - z_k||² + margin, 0)
 
         Args:
-            node_features: (B, T, N, D)
+            node_emb: (B, T, N, D) 节点嵌入
+            proto_assign: (B, T, N, M) 原型分配概率
+            margin: 对比损失间隔
 
         Returns:
             对比损失标量
         """
-        B, T, N, D = node_features.shape
-        node_features_flat = node_features.reshape(B * T, N, D)
+        B, T, N, D = node_emb.shape
 
-        node_proj = self.proto_proj(node_features_flat)
-        node_proj = F.normalize(node_proj, p=2, dim=-1)
-        prototypes_norm = F.normalize(self.prototypes, p=2, dim=-1)
+        with torch.no_grad():
+            hard_assign = torch.argmax(proto_assign, dim=-1)  # (B,T,N)
 
-        sim = torch.matmul(node_proj, prototypes_norm.transpose(0, 1)) / self.temperature
-        sim = torch.clamp(sim, min=-50, max=50)
-        exp_sim = torch.exp(sim)
+        emb = node_emb.reshape(B * T, N, D)          # (BT, N, D)
+        labels = hard_assign.reshape(B * T, N)       # (BT, N)
 
-        # 正样本：每个节点与其最相似的原型
-        pos_sim = sim.max(dim=-1)[0]
-        pos_sim = torch.clamp(pos_sim, min=-50, max=50)
+        # 预计算: 每个节点的 L2 范数
+        node_sqnorm = emb.pow(2).sum(-1)            # (BT, N)
+        # 预计算: 所有节点对的内积 (BT, N, N)，利用对称性只需算一次
+        inner_prod = torch.bmm(emb, emb.transpose(1, 2))  # (BT, N, N)
 
-        return (-pos_sim + torch.log(exp_sim.sum(dim=-1) + 1e-8)).mean()
+        # 预计算: 标签相等矩阵 (BT, N, N)
+        # labels[:, i] == labels[:, j] 对所有 i,j
+        same_label = labels.unsqueeze(2) == labels.unsqueeze(1)  # (BT, N, N)
+        # 排除自身: same_label[b, i, i] = False
+        diag_mask = 1.0 - torch.eye(N, device=emb.device).unsqueeze(0)  # (1, N, N)
+        pos_mask = same_label.float() * diag_mask        # (BT, N, N)
+        neg_mask = (1.0 - same_label.float())              # (BT, N, N)
+
+        # 每个 anchor 有多少正/负样本
+        pos_cnt = pos_mask.sum(-1).clamp(min=1)   # (BT, N)
+        neg_cnt = neg_mask.sum(-1).clamp(min=1)   # (BT, N)
+
+        # 用展开式计算距离: ||z_i - z_j||² = ||z_i||² + ||z_j||² - 2*<z_i, z_j>
+        # dist[b, i, j] = sqnorm[i] + sqnorm[j] - 2*inner_prod[i,j]
+        sq_dists = node_sqnorm.unsqueeze(2) + node_sqnorm.unsqueeze(1) - 2.0 * inner_prod
+        sq_dists = sq_dists.clamp(min=0)   # 数值稳定
+
+        # 正/负样本均值距离
+        pos_sum = (sq_dists * pos_mask).sum(-1)   # (BT, N)
+        neg_sum = (sq_dists * neg_mask).sum(-1)   # (BT, N)
+        pos_dist = pos_sum / pos_cnt
+        neg_dist = neg_sum / neg_cnt
+
+        # 对比损失
+        loss_mat = F.relu(pos_dist - neg_dist + margin)
+        valid = (pos_cnt > 0) & (neg_cnt > 0)
+        loss = loss_mat[valid].mean()
+
+        if loss.isnan().item():
+            return torch.tensor(0.0, device=node_emb.device, dtype=node_emb.dtype)
+
+        return loss
 
 
 class DilatedInception(nn.Module):
@@ -403,7 +442,8 @@ class DSTGN(AbstractTrafficStateModel):
         self.num_prototypes = config.get('num_prototypes', 16)
         self.prototype_dim = config.get('prototype_dim', 64)
         self.prototype_temperature = config.get('prototype_temperature', 0.3)
-        self.prototype_loss_weight = config.get('prototype_loss_weight', 0.1)
+        self.contrastive_loss_weight = config.get('contrastive_loss_weight', 0.1)
+        self.contrastive_margin = config.get('contrastive_margin', 0.5)
         self.geo_smooth_weight = config.get('geo_smooth_weight', 0.1)
         self.sinkhorn_iterations = config.get('sinkhorn_iterations', 2)
         self.use_proto = config.get('use_proto', True)
@@ -628,10 +668,12 @@ class DSTGN(AbstractTrafficStateModel):
         self._last_losses = {'pred': pred_loss.item()}
         total_loss = pred_loss
 
-        # 原型对比损失
+        # 原型对比损失（三元组）
         if self.use_proto and proto_info['proto'] is not None:
             contrastive_loss = self.prototype_module.get_contrastive_loss(
-                proto_info['embedded_features']
+                proto_info['embedded_features'],
+                proto_info['proto'],
+                margin=self.contrastive_margin
             )
 
             # 原型分布统计
@@ -643,11 +685,12 @@ class DSTGN(AbstractTrafficStateModel):
 
             self._last_losses.update({
                 'contrastive': contrastive_loss.item(),
-                'proto_loss_weight': self.prototype_loss_weight,
+                'contrastive_loss_weight': self.contrastive_loss_weight,
+                'contrastive_loss_contrib': (self.contrastive_loss_weight * contrastive_loss).item(),
                 'proto_dist': proto_ratio.cpu().tolist()
             })
 
-            total_loss = total_loss + self.prototype_loss_weight * contrastive_loss
+            total_loss = total_loss + self.contrastive_loss_weight * contrastive_loss
 
         return total_loss
 

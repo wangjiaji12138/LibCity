@@ -377,12 +377,13 @@ class TrafficStateExecutor(AbstractExecutor):
         if hasattr(self.model, 'get_last_losses'):
             info = self.model.get_last_losses()
             if 'proto_dist' in info:
-                self._logger.info(
-                    f'[Proto] pred={info["pred"]:.4f} | '
-                    f'contrastive={info["contrastive"]:.4f} | '
-                    f'proto_loss_weight={info.get("proto_loss_weight", 0):.4f} | '
-                    f'dist={info["proto_dist"]}'
-                )
+                    self._logger.info(
+                        f'[Proto] pred={info["pred"]:.4f} | '
+                        f'contrastive={info["contrastive"]:.4f} | '
+                        f'contrastive_loss_weight={info.get("contrastive_loss_weight", 0):.4f} | '
+                        f'contrastive_loss_contrib={info.get("contrastive_loss_contrib", 0):.4f} | '
+                        f'dist={info["proto_dist"]}'
+                    )
         return losses
 
     def _valid_epoch(self, eval_dataloader, epoch_idx, loss_func=None):
