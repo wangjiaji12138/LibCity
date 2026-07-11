@@ -410,12 +410,9 @@ class DSTGN(AbstractTrafficStateModel):
 
         # 嵌入维度
         self.input_embedding_dim = config.get('input_embedding_dim', 32)
-        self.spatial_embedding_dim = config.get('spatial_embedding_dim', 32)
         self.tod_embedding_dim = config.get('tod_embedding_dim', 16)
         self.dow_embedding_dim = config.get('dow_embedding_dim', 16)
-
-        # 模型维度 = 所有嵌入维度之和
-        self.model_dim = self.input_embedding_dim + self.spatial_embedding_dim + self.tod_embedding_dim + self.dow_embedding_dim
+        self.model_dim = self.input_embedding_dim + self.tod_embedding_dim + self.dow_embedding_dim
 
         # 注意力相关
         self.feed_forward_dim = config.get('feed_forward_dim', 256)
@@ -442,9 +439,6 @@ class DSTGN(AbstractTrafficStateModel):
         self.input_proj = nn.Linear(1, self.input_embedding_dim)
         self.tod_proj = nn.Linear(1, self.tod_embedding_dim)
         self.dow_proj = nn.Linear(7, self.dow_embedding_dim)
-
-        self.node_emb = nn.Parameter(torch.empty(self.num_nodes, self.spatial_embedding_dim))
-        nn.init.xavier_uniform_(self.node_emb)
 
         self.concat_linear = nn.Linear(self.model_dim, self.model_dim)
 
@@ -578,9 +572,8 @@ class DSTGN(AbstractTrafficStateModel):
         x_val = self.input_proj(batch['X'][..., 0:1])
         x_tod = self.tod_proj(batch['X'][..., 1:2])
         x_dow = self.dow_proj(batch['X'][..., 2:9])
-        spatial_emb = self.node_emb.unsqueeze(0).unsqueeze(1).expand(B, T, -1, -1)
         
-        x = torch.cat([x_val, x_tod, x_dow, spatial_emb], dim=-1)
+        x = torch.cat([x_val, x_tod, x_dow], dim=-1)
         x = self.concat_linear(x)
 
         # === 时间处理：时间注意力 + 膨胀卷积 ===
@@ -659,7 +652,6 @@ class DSTGN(AbstractTrafficStateModel):
                 proto_info['proto']
             )
 
-            # === 原型分布统计（GPU 累计 + 每步同步 cpu） ===
             with torch.no_grad():
                 hard_proto = torch.argmax(proto_info['proto'], dim=-1).view(-1)
                 proto_counts = torch.bincount(
