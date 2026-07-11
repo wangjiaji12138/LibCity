@@ -460,12 +460,10 @@ class DSTGN(AbstractTrafficStateModel):
             for _ in range(self.num_layers)
         ])
 
-        """构建并注册地理邻接矩阵与 (geo_adj + I)（在 GPU 上执行）"""
+        """构建并注册 (geo_adj + I) 的稀疏 buffer（在 GPU 上执行一次，避免每 forward 重新分配 eye）"""
         adj_mx = data_feature.get('adj_mx')
         if adj_mx is not None:
             adj = torch.from_numpy(adj_mx).float().to(self.device)
-            self.register_buffer('_geo_adj', adj)
-            # (geo_adj + I) 一次性创建，避免每个 forward 都重新分配 eye
             self.register_buffer(
                 '_geo_adj_hat',
                 adj + torch.eye(self.num_nodes, device=self.device, dtype=adj.dtype),
@@ -494,16 +492,16 @@ class DSTGN(AbstractTrafficStateModel):
         self.apply(self._init_weights)
         
 
-    def _compute_dynamic_adj(self, x: Tensor, proto: Tensor | None) -> Tensor:
+    def _compute_sim(self, x: Tensor, proto: Tensor | None) -> Tensor:
         """
-        计算动态邻接矩阵（已在时间维度上聚合到 (B, N, N)）
+        计算节点相似度矩阵（已在时间维度上聚合到 (B, N, N)）
 
         Args:
             x: (B, T, N, D) 嵌入特征（仅用于推断 device/dtype，未参与计算）
             proto: (B, T, N, M) 原型分配概率
 
         Returns:
-            (B, N, N) 对时间平均后的动态邻接矩阵
+            (B, N, N) 对时间平均后的节点相似度矩阵
         """
         B, T, N, _ = x.shape
         device, dtype = x.device, x.dtype
@@ -517,35 +515,31 @@ class DSTGN(AbstractTrafficStateModel):
         else:
             sim = torch.ones(B, N, N, device=device, dtype=dtype)
 
-        if hasattr(self, '_geo_adj') and self._geo_adj is not None:
-            dynamic_adj = sim * self._geo_adj  # broadcast (B,N,N)*(N,N) -> (B,N,N)
-        else:
-            dynamic_adj = sim
+        return sim
 
-        return dynamic_adj
-
-    def _normalize_adj(self, dynamic_adj: Tensor, B: int, T: int, N: int) -> Tensor:
+    def _normalize_adj(self, sim: Tensor, B: int, T: int, N: int) -> Tensor:
         """
-        归一化动态邻接矩阵
+        将 (B, N, N) 的节点相似度 sim 组合成 GCN 归一化邻接矩阵:
+        A = (geo_adj + I) ⊙ sim，其中 geo_adj 做掩码、对角 + I 加自环。
 
         Args:
-            dynamic_adj: (B, N, N) 动态邻接矩阵
+            sim: (B, N, N) 节点相似度矩阵
             B, T, N: 批次、时间、节点维度
 
         Returns:
             (B*T, N, N) 归一化后的邻接矩阵
         """
-        device, dtype = dynamic_adj.device, dynamic_adj.dtype
+        device, dtype = sim.device, sim.dtype
 
         if hasattr(self, '_geo_adj_hat') and self._geo_adj_hat is not None:
             geo_hat = self._geo_adj_hat
             if geo_hat.device != device:
                 geo_hat = geo_hat.to(device)
 
-            # (geo_adj + I) * dynamic_adj, broadcasting (N,N)*(B,N,N)->(B,N,N)
-            A_dynamic = geo_hat.unsqueeze(0) * dynamic_adj
+            # (geo_adj + I) * sim, broadcasting (N,N)*(B,N,N)->(B,N,N)
+            A_dynamic = geo_hat.unsqueeze(0) * sim
         else:
-            A_dynamic = dynamic_adj
+            A_dynamic = sim
 
         # 对称归一化：D^{-1/2} A D^{-1/2}
         deg = A_dynamic.sum(dim=-1, keepdim=True).clamp(min=1)
@@ -589,9 +583,9 @@ class DSTGN(AbstractTrafficStateModel):
         if self.use_proto:
             _, proto = self.prototype_module(x)
 
-        # === 动态邻接矩阵 ===
-        dynamic_adj = self._compute_dynamic_adj(x, proto)
-        adj_norm = self._normalize_adj(dynamic_adj, B, T, N)
+        # === 节点相似度 + 归一化邻接矩阵 ===
+        sim = self._compute_sim(x, proto)
+        adj_norm = self._normalize_adj(sim, B, T, N)
 
         # === 图卷积 ===
         for gcn in self.graph_convs:
