@@ -1,6 +1,5 @@
 """
 DSTGN: Dual Spatio-Temporal Graph Network (Clean Baseline)
-
 架构：Encoder -> [T-Attn x N] -> [S-Attn x N] -> Output(proj)
 """
 
@@ -14,12 +13,6 @@ from logging import getLogger
 
 from libcity.model import loss
 from libcity.model.abstract_traffic_state_model import AbstractTrafficStateModel
-
-
-## TODO:
-# 改名Spatial Pattern Module SPM
-# Sinkhorn-Knopp 正则化验证效果
-# 是否需要detach
 
 class SpatialPrototypeModule(nn.Module):
     """
