@@ -36,8 +36,6 @@
   "use_early_stop": true,
   "patience": 15,
 
-  "use_mlp_proj": true,
-
   "num_prototypes": 16,
   "prototype_dim": 128,
   "prototype_temperature": 0.3,

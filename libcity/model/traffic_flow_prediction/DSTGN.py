@@ -479,14 +479,8 @@ class DSTGN(AbstractTrafficStateModel):
             adj = torch.from_numpy(adj_mx).float().to(self.device)
             self.register_buffer('_geo_adj', adj)
 
-            # 预计算对称归一化: D^(-1/2) @ (A + I) @ D^(-1/2)，在 GPU 上执行
-            A_hat = adj + torch.eye(adj.shape[0], dtype=adj.dtype, device=self.device)
-            deg = A_hat.sum(dim=-1, keepdim=True).clamp(min=1)
-            deg_sqrt = deg.pow(0.5)
-            D_inv_sqrt = deg_sqrt.reciprocal()
-            adj_norm = D_inv_sqrt * A_hat * D_inv_sqrt.transpose(-2, -1)
-            self.register_buffer('_geo_adj_norm', adj_norm)
-            
+            # 存储原始地理邻接矩阵
+            self.register_buffer('_geo_adj', adj)
         if self.use_proto:
             self.prototype_module = SpatialPrototypeModule(
                 num_nodes=self.num_nodes,
@@ -551,17 +545,20 @@ class DSTGN(AbstractTrafficStateModel):
         Returns:
             (B*T, N, N) 归一化后的邻接矩阵
         """
-        if hasattr(self, '_geo_adj_norm') and self._geo_adj_norm is not None:
-            geo_adj_norm = self._geo_adj_norm
-            if geo_adj_norm.device != dynamic_adj.device:
-                geo_adj_norm = geo_adj_norm.to(dynamic_adj.device)
+        if hasattr(self, '_geo_adj') and self._geo_adj is not None:
+            geo_adj = self._geo_adj
+            if geo_adj.device != dynamic_adj.device:
+                geo_adj = geo_adj.to(dynamic_adj.device)
 
-            adj_norm = geo_adj_norm * dynamic_adj
-            deg = adj_norm.sum(dim=-1, keepdim=True).clamp(min=1)
-            deg_sqrt = deg.pow(0.5)
-            adj_norm = deg_sqrt.reciprocal() * adj_norm * deg_sqrt.reciprocal().transpose(-2, -1)
+            A_hat = geo_adj + torch.eye(N, device=dynamic_adj.device, dtype=dynamic_adj.dtype)
+            A_dynamic = A_hat * dynamic_adj
+            deg = A_dynamic.sum(dim=-1, keepdim=True).clamp(min=1)
+            D_inv_sqrt = deg.pow(0.5).reciprocal()
+            adj_norm = D_inv_sqrt * A_dynamic * D_inv_sqrt.transpose(-2, -1)
         else:
-            adj_norm = dynamic_adj
+            deg = dynamic_adj.sum(dim=-1, keepdim=True).clamp(min=1)
+            D_inv_sqrt = deg.pow(0.5).reciprocal()
+            adj_norm = D_inv_sqrt * dynamic_adj * D_inv_sqrt.transpose(-2, -1)
 
         return adj_norm.unsqueeze(1).expand(B, T, N, N).reshape(B * T, N, N)
 
