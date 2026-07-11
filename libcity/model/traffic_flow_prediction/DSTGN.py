@@ -307,8 +307,8 @@ class SelfAttentionLayer(nn.Module):
         self.dropout1 = nn.Dropout(dropout)
         self.dropout2 = nn.Dropout(dropout)
 
-    def forward(self, x, dim=-3):
-        x = x.transpose(dim, -3)
+    def forward(self, x, dim=-2):
+        x = x.transpose(dim, -2)
         # x: (batch_size, ..., length, model_dim)
         residual = x
         out = self.attn(query = x, key = x, value = x)  # (batch_size, ..., length, model_dim)
