@@ -1,6 +1,6 @@
 """
 DSTGN: Dual Spatio-Temporal Graph Network (Clean Baseline)
-架构：Encoder -> [T-Attn x N] -> [S-Attn x N] -> Output(proj)
+架构：Encoder -> [T-Attn x N] -> [HeadKernel Factorized TCN x N] -> [S-Attn x N] -> Output(proj)
 """
 
 from __future__ import annotations
@@ -168,42 +168,95 @@ class SpatialPrototypeModule(nn.Module):
         return loss
 
 
-class DilatedInception(nn.Module):
+class HeadKernelFactorizedTCN(nn.Module):
     """
-    多尺度膨胀卷积：捕获不同时间尺度的模式
+    Head-Kernel 双因子交互 TCN (FHKI)
 
-    使用 4 种不同卷积核大小的膨胀卷积：
-    kernel_set = [2, 3, 6, 7]
+    与 SelfAttentionLayer 配合使用：把 attention 输出作为 context，
+    动态生成 head × kernel 双因子交互表 I ∈ R^{H × K}，
+    让每个 head 自适应选择时间尺度，每个 kernel 接收匹配的 head 上下文。
+
+    设计：
+      - K 个 kernel 各输出 cout 通道，再按 head 切分为 head_dim
+      - 交互表 I[B, T, H, K] 由 attention context 动态生成，每个时间步重算
+      - 输出：对每个 head h，output[h] = Σ_k I[h, k] * feats[k][h 的通道]
 
     Args:
         cin: 输入通道数
-        cout: 输出通道数
+        cout: 输出通道数（必须能整除 num_heads）
+        num_heads: 注意力头数（默认与 kernel 数对齐）
         dilation_factor: 膨胀因子
+        interaction_temperature: sigmoid 温度，越大越平滑
     """
 
     KERNEL_SET = [2, 3, 6, 7]
 
-    def __init__(self, cin: int, cout: int, dilation_factor: int = 2):
+    def __init__(self, cin: int, cout: int, num_heads: int = 4,
+                 dilation_factor: int = 2, interaction_temperature: float = 1.0):
         super().__init__()
-        cout_per_head = cout // len(self.KERNEL_SET)
+        assert cout % num_heads == 0, "cout 必须能整除 num_heads"
+        assert num_heads == len(self.KERNEL_SET), \
+            f"head 数 ({num_heads}) 应等于 kernel 数 ({len(self.KERNEL_SET)}) 以形成 H×H 交互"
+
+        self.num_heads = num_heads
+        self.head_dim = cout // num_heads
+        self.dilation_factor = dilation_factor
+        self.interaction_temperature = interaction_temperature
+
+        # === 多尺度卷积分支 ===
+        # 每个 kernel 输出 cout 通道，再按 head 切分为 head_dim 段
         self.tconv_list = nn.ModuleList()
         for kernel_size in self.KERNEL_SET:
             pad = (kernel_size - 1) * dilation_factor // 2
             self.tconv_list.append(
-                nn.Conv2d(cin, cout_per_head, (1, kernel_size),
-                         padding=(0, pad), dilation=(1, dilation_factor))
+                nn.Conv2d(cin, cout, (1, kernel_size),
+                          padding=(0, pad), dilation=(1, dilation_factor))
             )
 
-    def forward(self, x: Tensor) -> Tensor:
+        # === 双因子 attention 生成器 ===
+        # 把 attention context 投影到 head / kernel 维度
+        self.head_proj = nn.Linear(cout, num_heads)
+        self.kernel_proj = nn.Linear(cout, num_heads)
+
+    def forward(self, x: Tensor, t_context: Tensor) -> Tensor:
         """
         Args:
-            x: (B, D, N, T) - Conv2d 格式
+            x: (B, D, N, T)         待卷积特征
+            t_context: (B, T, N, D) 上一步 SelfAttention 的输出
 
         Returns:
-            (B, D', N, T') - 通道拼接后的输出
+            (B, D, N, T)
         """
-        outputs = [tconv(x) for tconv in self.tconv_list]
-        return torch.cat(outputs, dim=1)
+        B, D, N, T = x.shape
+
+        # 1) 多尺度卷积: K 个 (B, cout, N, T)
+        feats = [tconv(x) for tconv in self.tconv_list]
+
+        # 2) 把 attention context 聚合: (B, T, N, D) -> (B, T, D)
+        ctx = t_context.mean(dim=2)                                 # (B, T, D)
+
+        # 3) 双因子交互表 I[B, T, H, K]
+        head_scores = self.head_proj(ctx)                           # (B, T, H)
+        kernel_scores = self.kernel_proj(ctx)                       # (B, T, K)
+        interact = torch.sigmoid(
+            (head_scores.unsqueeze(-1) * kernel_scores.unsqueeze(-2))
+            / self.interaction_temperature
+        )                                                           # (B, T, H, K)
+
+        # 4) 按交互表加权融合多尺度特征
+        # feats[k]: (B, cout, N, T)，按 head 切分为 head_dim 段
+        # output[h] = Σ_k I[h, k] * feats[k][:, h*head_dim:(h+1)*head_dim, :, :]
+        outputs_per_head = []
+        for h in range(self.num_heads):
+            head_feats = [f[:, h*self.head_dim:(h+1)*self.head_dim] for f in feats]
+            # head h 对每个 kernel 的权重: (B, K, 1, T)
+            w = interact[:, :, h, :].permute(0, 2, 1).unsqueeze(2)
+            head_stack = torch.stack(head_feats, dim=1)             # (B, K, head_dim, N, T)
+            head_out = (head_stack * w.unsqueeze(2)).sum(dim=1)     # (B, head_dim, N, T)
+            outputs_per_head.append(head_out)
+
+        out = torch.cat(outputs_per_head, dim=1)                   # (B, cout, N, T)
+        return out.reshape(B, D, N, T)
 
 class AttentionLayer(nn.Module):
     def __init__(self, model_dim, num_heads=4, mask=False):
@@ -412,6 +465,7 @@ class DSTGN(AbstractTrafficStateModel):
         self.num_heads = config.get('num_heads', 4)
         self.num_layers = config.get('num_layers', 3)
         self.dropout = config.get('dropout', 0.1)
+        self.interaction_temperature = config.get('interaction_temperature', 1.0)
 
         # 原型模块参数
         self.num_prototypes = config.get('num_prototypes', 16)
@@ -436,9 +490,12 @@ class DSTGN(AbstractTrafficStateModel):
         self.concat_linear = nn.Linear(self.model_dim, self.model_dim)
 
 
-        """构建时间处理层（注意力 + 膨胀卷积）"""
+        """构建时间处理层（注意力 + Head-Kernel 双因子交互 TCN）"""
         self.time_conv = nn.ModuleList([
-            DilatedInception(self.model_dim, self.model_dim, dilation_factor=2)
+            HeadKernelFactorizedTCN(self.model_dim, self.model_dim,
+                                    num_heads=self.num_heads,
+                                    dilation_factor=2,
+                                    interaction_temperature=self.interaction_temperature)
             for _ in range(self.num_layers)
         ])
         self.attn_layers_t = nn.ModuleList([
@@ -563,12 +620,13 @@ class DSTGN(AbstractTrafficStateModel):
         x = torch.cat([x_val, x_tod, x_dow], dim=-1)
         x = self.concat_linear(x)
 
-        # === 时间处理：时间注意力 + 膨胀卷积 ===
+        # === 时间处理：时间注意力 + Head-Kernel 双因子交互 TCN ===
         for i, (attn_t, tconv) in enumerate(zip(self.attn_layers_t, self.time_conv)):
             residual = x
-            x = attn_t(x, dim=1)   #[B, T, N, D]
-            x_conv = x.permute(0, 3, 2, 1)  #[B, D, N, T]
-            x_conv = tconv(x_conv)  #[B, D, N, T]
+            x_attn = attn_t(x, dim=1)                  # (B, T, N, D) SelfAttention 输出
+            x_conv = x_attn.permute(0, 3, 2, 1)        # (B, D, N, T)
+            # 把 attention 输出作为 context 喂给 TCN，做 head × kernel 双因子交互
+            x_conv = tconv(x_conv, t_context=x_attn)
             x = x_conv.permute(0, 3, 2, 1) + residual
 
         # === 原型模块（用于动态邻接矩阵和对比损失） ===

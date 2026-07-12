@@ -36,9 +36,11 @@
   "use_early_stop": true,
   "patience": 15,
 
-  "num_prototypes": 16,
-  "prototype_dim": 128,
+  "num_prototypes": 8,
+  "prototype_dim": 64,
   "prototype_temperature": 0.3,
   "contrastive_loss_weight": 0.1,
-  "contrastive_temperature": 0.1
+  "contrastive_temperature": 0.1,
+
+  "interaction_temperature": 1.0
 }
