@@ -258,86 +258,26 @@ class HeadKernelFactorizedTCN(nn.Module):
         out = torch.cat(outputs_per_head, dim=1)                   # (B, cout, N, T)
         return out.reshape(B, D, N, T)
 
-class AttentionLayer(nn.Module):
-    def __init__(self, model_dim, num_heads=4, mask=False):
-        super().__init__()
+class SelfAttentionLayer(nn.Module):
+    """
+    时间自注意力层（内联实现，无独立 AttentionLayer）
+    """
 
+    def __init__(self, model_dim: int, feed_forward_dim: int = 256,
+                 num_heads: int = 4, dropout: float = 0.1):
+        super().__init__()
+        assert model_dim % num_heads == 0
         self.model_dim = model_dim
         self.num_heads = num_heads
-        self.mask = mask
-
         self.head_dim = model_dim // num_heads
+        self.scale = self.head_dim ** -0.5
 
+        # Q, K, V 投影（Xavier 初始化由 _init_weights 统一处理）
         self.FC_Q = nn.Linear(model_dim, model_dim)
         self.FC_K = nn.Linear(model_dim, model_dim)
         self.FC_V = nn.Linear(model_dim, model_dim)
-
         self.out_proj = nn.Linear(model_dim, model_dim)
 
-        # 预注册的 causal mask（仅当 mask=True 时使用，设备随 .to() 跟随）
-        if self.mask:
-            self.register_buffer(
-                '_causal_mask',
-                torch.empty(0, dtype=torch.bool),
-            )
-
-    def _get_causal_mask(self, N: int, device) -> Tensor:
-        """惰性创建/缓存 causal mask，无需每个 step 重新分配"""
-        m = getattr(self, '_causal_mask', None)
-        if m is None or m.numel() != N * N or m.device != device:
-            m = torch.ones(N, N, dtype=torch.bool, device=device).tril()
-            self.register_buffer('_causal_mask', m)
-            self._causal_mask = m
-        return self._causal_mask
-
-    def forward(self, query, key, value):
-        # Q,K,V all have shape (B, T, N, D) in DSTGN
-        B, T, N, D = query.shape
-        H, h = self.num_heads, self.head_dim
-
-        # Linear projection -> (B, H, T, N, h)
-        Q = self.FC_Q(query).view(B, H, T, N, h)
-        K = self.FC_K(key).view(B, H, T, N, h)
-        V = self.FC_V(value).view(B, H, T, N, h)
-
-        # 合并 B 和 H 为单一 batch 维度；F.scaled_dot_product_attention 会自动
-        # 走 FlashAttention / memory-efficient / math 后端，显著快于手写实现
-        Q = Q.permute(0, 1, 3, 2, 4).reshape(B * H, T, N, h)
-        K = K.permute(0, 1, 3, 2, 4).reshape(B * H, T, N, h)
-        V = V.permute(0, 1, 3, 2, 4).reshape(B * H, T, N, h)
-
-        attn_mask = self._get_causal_mask(N, query.device) if self.mask else None
-
-        if hasattr(F, 'scaled_dot_product_attention'):
-            # PyTorch 2.0+：自动使用 FlashAttention / memory-efficient 后端
-            out = F.scaled_dot_product_attention(
-                Q, K, V,
-                attn_mask=attn_mask,
-                dropout_p=0.0,
-                is_causal=False,
-            )
-        else:
-            # 旧版回退：手写实现（保持环境兼容）
-            attn_score = (Q @ K.transpose(-1, -2)) / (h ** 0.5)
-            if attn_mask is not None:
-                attn_score = attn_score.masked_fill(~attn_mask, -torch.inf)
-            attn_score = torch.softmax(attn_score, dim=-1)
-            out = attn_score @ V
-
-        # Restore: (B*H, T, N, h) -> (B, H, T, N, h) -> (B, T, N, D)
-        out = out.reshape(B, H, T, N, h).permute(0, 2, 3, 1, 4).reshape(B, T, N, D)
-        out = self.out_proj(out)
-
-        return out
-        
-
-class SelfAttentionLayer(nn.Module):
-    
-    def __init__(self, model_dim: int, feed_forward_dim: int = 256,
-                 num_heads: int = 4, dropout: float = 0.1, mask: bool = False):
-        super().__init__()
-        self.model_dim = model_dim
-        self.attn = AttentionLayer(model_dim, num_heads, mask)
         self.feed_forward = nn.Sequential(
             nn.Linear(model_dim, feed_forward_dim),
             nn.ReLU(inplace=True),
@@ -348,20 +288,36 @@ class SelfAttentionLayer(nn.Module):
         self.dropout1 = nn.Dropout(dropout)
         self.dropout2 = nn.Dropout(dropout)
 
-    def forward(self, x, dim=-2):
-        x = x.transpose(dim, -2)
-        # x: (batch_size, ..., length, model_dim)
+    def forward(self, x: Tensor, dim: int = -2) -> Tensor:
+        B, T, N, D = x.shape  # dim=-2 时对应 T
+        H, h = self.num_heads, self.head_dim
+
+        # 自注意力 Q=K=V，reshape 为多头
+        Q = self.FC_Q(x).view(B, H, T, N, h).permute(0, 1, 3, 2, 4).reshape(B * H, T, N, h)
+        K = self.FC_K(x).view(B, H, T, N, h).permute(0, 1, 3, 2, 4).reshape(B * H, T, N, h)
+        V = self.FC_V(x).view(B, H, T, N, h).permute(0, 1, 3, 2, 4).reshape(B * H, T, N, h)
+
+        if hasattr(F, 'scaled_dot_product_attention'):
+            out = F.scaled_dot_product_attention(Q, K, V, dropout_p=0.0)
+        else:
+            attn_score = (Q @ K.transpose(-1, -2)) / self.scale
+            attn_score = torch.softmax(attn_score, dim=-1)
+            out = attn_score @ V
+
+        # 恢复形状并输出投影
+        out = out.reshape(B, H, T, N, h).permute(0, 2, 3, 1, 4).reshape(B, T, N, D)
+        out = self.out_proj(out)
+
+        # 残差 + LN + FFN
         residual = x
-        out = self.attn(query = x, key = x, value = x)  # (batch_size, ..., length, model_dim)
         out = self.dropout1(out)
         out = self.ln1(residual + out)
 
-        residual = out
-        out = self.feed_forward(out)  # (batch_size, ..., length, model_dim)
+        residual2 = out
+        out = self.feed_forward(out)
         out = self.dropout2(out)
-        out = self.ln2(residual + out)
+        out = self.ln2(residual2 + out)
 
-        out = out.transpose(dim, -2)
         return out
 
 
@@ -601,7 +557,7 @@ class DSTGN(AbstractTrafficStateModel):
 
     def _init_weights(self, m) -> None:
         """权重初始化"""
-        if isinstance(m, (nn.Linear, nn.Conv1d)):
+        if isinstance(m, (nn.Linear, nn.Conv1d, nn.Conv2d)):
             nn.init.xavier_uniform_(m.weight)
             if m.bias is not None:
                 nn.init.zeros_(m.bias)
