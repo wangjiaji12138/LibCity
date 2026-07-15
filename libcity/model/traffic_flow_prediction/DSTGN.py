@@ -260,9 +260,8 @@ class HeadKernelFactorizedTCN(nn.Module):
 
 class SelfAttentionLayer(nn.Module):
     """
-    时间自注意力层（内联实现，无独立 AttentionLayer）
+    时间自注意力层（对时间维度 T 做多头注意力，每个节点独立）
     """
-
     def __init__(self, model_dim: int, feed_forward_dim: int = 256,
                  num_heads: int = 4, dropout: float = 0.1):
         super().__init__()
@@ -272,10 +271,10 @@ class SelfAttentionLayer(nn.Module):
         self.head_dim = model_dim // num_heads
         self.scale = self.head_dim ** -0.5
 
-        # Q, K, V 投影（Xavier 初始化由 _init_weights 统一处理）
-        self.FC_Q = nn.Linear(model_dim, model_dim)
-        self.FC_K = nn.Linear(model_dim, model_dim)
-        self.FC_V = nn.Linear(model_dim, model_dim)
+        # Q, K, V 投影（权重不共享）
+        self.q_proj = nn.Linear(model_dim, model_dim)
+        self.k_proj = nn.Linear(model_dim, model_dim)
+        self.v_proj = nn.Linear(model_dim, model_dim)
         self.out_proj = nn.Linear(model_dim, model_dim)
 
         self.feed_forward = nn.Sequential(
@@ -288,38 +287,47 @@ class SelfAttentionLayer(nn.Module):
         self.dropout1 = nn.Dropout(dropout)
         self.dropout2 = nn.Dropout(dropout)
 
-    def forward(self, x: Tensor, dim: int = -2) -> Tensor:
-        B, T, N, D = x.shape  # dim=-2 时对应 T
-        H, h = self.num_heads, self.head_dim
+    def forward(self, x: Tensor) -> Tensor:
+        """
+        Args:
+            x: (B, T, N, D)
+        Returns:
+            (B, T, N, D)
+        """
+        B, T, N, D = x.shape
+        # 将节点维度合并到 batch，便于独立处理每个节点的时间序列
+        x_flat = x.permute(0, 2, 1, 3).reshape(B * N, T, D)  # (B*N, T, D)
 
-        # 自注意力 Q=K=V，reshape 为多头
-        Q = self.FC_Q(x).view(B, H, T, N, h).permute(0, 1, 3, 2, 4).reshape(B * H, T, N, h)
-        K = self.FC_K(x).view(B, H, T, N, h).permute(0, 1, 3, 2, 4).reshape(B * H, T, N, h)
-        V = self.FC_V(x).view(B, H, T, N, h).permute(0, 1, 3, 2, 4).reshape(B * H, T, N, h)
+        # 多头投影
+        q = self.q_proj(x_flat).view(B * N, T, self.num_heads, self.head_dim).transpose(1, 2)  # (B*N, H, T, head_dim)
+        k = self.k_proj(x_flat).view(B * N, T, self.num_heads, self.head_dim).transpose(1, 2)
+        v = self.v_proj(x_flat).view(B * N, T, self.num_heads, self.head_dim).transpose(1, 2)
 
+        # 缩放点积注意力
         if hasattr(F, 'scaled_dot_product_attention'):
-            out = F.scaled_dot_product_attention(Q, K, V, dropout_p=0.0)
+            # 使用高效实现 (Flash Attention)
+            attn_out = F.scaled_dot_product_attention(q, k, v, dropout_p=0.0)
         else:
-            attn_score = (Q @ K.transpose(-1, -2)) / self.scale
-            attn_score = torch.softmax(attn_score, dim=-1)
-            out = attn_score @ V
+            attn_scores = torch.matmul(q, k.transpose(-2, -1)) * self.scale
+            attn_weights = F.softmax(attn_scores, dim=-1)
+            attn_out = torch.matmul(attn_weights, v)
 
-        # 恢复形状并输出投影
-        out = out.reshape(B, H, T, N, h).permute(0, 2, 3, 1, 4).reshape(B, T, N, D)
-        out = self.out_proj(out)
+        # 合并多头
+        attn_out = attn_out.transpose(1, 2).contiguous().view(B * N, T, D)
+        attn_out = self.out_proj(attn_out)
 
-        # 残差 + LN + FFN
-        residual = x
-        out = self.dropout1(out)
-        out = self.ln1(residual + out)
+        # 残差 + LayerNorm + Dropout (第一个子层)
+        out = x_flat + self.dropout1(attn_out)
+        out = self.ln1(out)
 
-        residual2 = out
-        out = self.feed_forward(out)
-        out = self.dropout2(out)
-        out = self.ln2(residual2 + out)
+        # 前馈网络 + 残差 + LayerNorm + Dropout (第二个子层)
+        ff_out = self.feed_forward(out)
+        out = out + self.dropout2(ff_out)
+        out = self.ln2(out)
 
+        # 恢复形状
+        out = out.reshape(B, N, T, D).permute(0, 2, 1, 3)  # (B, T, N, D)
         return out
-
 
 class ProtoAwareGraphConvLayer(nn.Module):
     """
@@ -579,7 +587,7 @@ class DSTGN(AbstractTrafficStateModel):
         # === 时间处理：时间注意力 + Head-Kernel 双因子交互 TCN ===
         for i, (attn_t, tconv) in enumerate(zip(self.attn_layers_t, self.time_conv)):
             residual = x
-            x_attn = attn_t(x, dim=1)                  # (B, T, N, D) SelfAttention 输出
+            x_attn = attn_t(x)                  # (B, T, N, D) SelfAttention 输出
             x_conv = x_attn.permute(0, 3, 2, 1)        # (B, D, N, T)
             # 把 attention 输出作为 context 喂给 TCN，做 head × kernel 双因子交互
             x_conv = tconv(x_conv, t_context=x_attn)
