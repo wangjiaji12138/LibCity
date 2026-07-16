@@ -286,6 +286,7 @@ class SelfAttentionLayer(nn.Module):
         self.ln2 = nn.LayerNorm(model_dim)
         self.dropout1 = nn.Dropout(dropout)
         self.dropout2 = nn.Dropout(dropout)
+        self.residual_scale = nn.Parameter(torch.ones(1))
 
     def forward(self, x: Tensor) -> Tensor:
         """
@@ -307,6 +308,7 @@ class SelfAttentionLayer(nn.Module):
         if hasattr(F, 'scaled_dot_product_attention'):
             # 使用高效实现 (Flash Attention)
             attn_out = F.scaled_dot_product_attention(q, k, v, dropout_p=0.0)
+            attn_out = attn_out.to(x_flat.dtype)
         else:
             attn_scores = torch.matmul(q, k.transpose(-2, -1)) * self.scale
             attn_weights = F.softmax(attn_scores, dim=-1)
@@ -317,12 +319,12 @@ class SelfAttentionLayer(nn.Module):
         attn_out = self.out_proj(attn_out)
 
         # 残差 + LayerNorm + Dropout (第一个子层)
-        out = x_flat + self.dropout1(attn_out)
+        out = x_flat + self.dropout1(attn_out) * self.residual_scale
         out = self.ln1(out)
 
         # 前馈网络 + 残差 + LayerNorm + Dropout (第二个子层)
         ff_out = self.feed_forward(out)
-        out = out + self.dropout2(ff_out)
+        out = out + self.dropout2(ff_out) * self.residual_scale
         out = self.ln2(out)
 
         # 恢复形状
@@ -341,6 +343,8 @@ class ProtoAwareGraphConvLayer(nn.Module):
         self.linear = nn.Linear(model_dim, model_dim)
         self.proto_linear = nn.Linear(num_prototypes, model_dim)
         self.dropout = nn.Dropout(dropout)
+        self.ln = nn.LayerNorm(model_dim)
+        self.residual_gate = nn.Parameter(torch.zeros(1))
 
     def _compute_prototype_enhanced_adj(self, proto_flat: Tensor, adj_norm: Tensor) -> Tensor:
         """
@@ -389,8 +393,8 @@ class ProtoAwareGraphConvLayer(nn.Module):
             out = out + proto_res
 
         # 残差连接 + LayerNorm + ReLU
-        out = out + residual
-        out = F.layer_norm(out, (D,))
+        out = out + torch.sigmoid(self.residual_gate) * residual
+        out = self.ln(out)
         return self.dropout(F.relu(out))
 
 
