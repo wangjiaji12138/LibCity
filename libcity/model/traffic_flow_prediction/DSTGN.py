@@ -558,7 +558,7 @@ class DSTGN(AbstractTrafficStateModel):
             A_dynamic = sim
 
         # 对称归一化：D^{-1/2} A D^{-1/2}
-        deg = A_dynamic.sum(dim=-1, keepdim=True).clamp(min=1)
+        deg = A_dynamic.sum(dim=-1, keepdim=True).clamp(min=1e-8)
         D_inv_sqrt = deg.pow(0.5).reciprocal()
         adj_norm = D_inv_sqrt * A_dynamic * D_inv_sqrt.transpose(-2, -1)
 
