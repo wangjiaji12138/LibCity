@@ -204,12 +204,19 @@ class HeadKernelFactorizedTCN(nn.Module):
         # === 多尺度卷积分支 ===
         # 每个 kernel 输出 cout 通道，再按 head 切分为 head_dim 段
         self.tconv_list = nn.ModuleList()
+        self.gate_conv_list = nn.ModuleList()
         for kernel_size in self.KERNEL_SET:
             pad = (kernel_size - 1) * dilation_factor // 2
             self.tconv_list.append(
                 nn.Conv2d(cin, cout, (1, kernel_size),
                           padding=(0, pad), dilation=(1, dilation_factor))
             )
+            gate_conv = nn.Conv2d(cin, cout, (1, kernel_size),
+                                  padding=(0, pad), dilation=(1, dilation_factor))
+            # GLU 门控 bias 初始化为 +1，使初始 sigmoid ≈ 0.73，
+            # 接近恒等映射，避免训练初期信号被门控压扁导致收敛变慢
+            nn.init.constant_(gate_conv.bias, 1.0)
+            self.gate_conv_list.append(gate_conv)
 
         # === 双因子 attention 生成器 ===
         # 把 attention context 投影到 head / kernel 维度
@@ -227,8 +234,12 @@ class HeadKernelFactorizedTCN(nn.Module):
         """
         B, D, N, T = x.shape
 
-        # 1) 多尺度卷积: K 个 (B, cout, N, T)
-        feats = [tconv(x) for tconv in self.tconv_list]
+        # 1) 多尺度卷积 + GLU 门控: K 个 (B, cout, N, T)
+        feats = []
+        for tconv, gate_conv in zip(self.tconv_list, self.gate_conv_list):
+            feats_t = tconv(x)
+            gate = torch.sigmoid(gate_conv(x))
+            feats.append(feats_t * gate)
 
         # 2) 把 attention context 聚合: (B, T, N, D) -> (B, T, D)
         ctx = t_context.mean(dim=2)                                 # (B, T, D)
