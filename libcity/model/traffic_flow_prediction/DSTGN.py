@@ -159,8 +159,6 @@ class SpatialPrototypeModule(nn.Module):
 
         loss = loss_per_anchor[valid].mean()
 
-        loss = loss_per_anchor[valid].mean()
-
         # NaN 防护: NaN 通常来自 0*inf，已在 denom 和 +1e-8 处夹紧；这里
         # 在 GPU 上用 torch.where 屏蔽，避免触发 .item() 同步
         loss = torch.where(torch.isnan(loss), torch.zeros_like(loss), loss)
